@@ -1,0 +1,5 @@
+tkinterdnd2
+pandas
+xlsxwriter
+psycopg2-binary
+matplotlib

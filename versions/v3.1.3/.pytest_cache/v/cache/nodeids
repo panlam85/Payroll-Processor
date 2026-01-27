@@ -1,0 +1,13 @@
+[
+  "tests/test_db_storage_full.py::test_delete_and_counts",
+  "tests/test_db_storage_full.py::test_insurance_claims_queries",
+  "tests/test_db_storage_full.py::test_mark_paid_by_receipt_total",
+  "tests/test_db_storage_full.py::test_metrics_and_analytics_queries",
+  "tests/test_payroll_cli_more.py::test_run_processing_full_flow",
+  "tests/test_process_payroll_more.py::test_classify_document",
+  "tests/test_process_payroll_more.py::test_extract_iban",
+  "tests/test_process_payroll_more.py::test_parse_pdf_parses_slips",
+  "tests/test_process_payroll_more.py::test_parse_transfer_receipt",
+  "tests/test_process_payroll_more.py::test_parse_transfer_receipt_paths",
+  "tests/test_process_payroll_more.py::test_process_zip_and_pdf"
+]
