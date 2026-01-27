@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Optional
 import sysconfig
 
-APP_VERSION = "3.1.2"
+APP_VERSION = "3.1.3"
 APP_VERSION_SHORT = APP_VERSION.rsplit(".", 1)[0] if "." in APP_VERSION else APP_VERSION
 
 SCRIPT_PATH = Path(__file__).resolve()
@@ -27,45 +27,68 @@ ASSETS_DIR = VERSION_DIR / "assets"
 REQ_FILE = VERSION_DIR / "requirements.txt"
 DIST_DIR = REPO_ROOT / "dist"
 VENV_EMBED_DIR = VERSION_DIR / ".venv-embed"
+ARCH_BIN = shutil.which("arch")
+LIPO_BIN = shutil.which("lipo")
 
 
-def ensure_venv() -> Path:
+def _venv_dir_for_arch(target_arch: Optional[str]) -> Path:
+    if not target_arch:
+        return VENV_EMBED_DIR / "default"
+    return VENV_EMBED_DIR / target_arch
+
+
+def _run_python(python_bin: Path, args, target_arch: Optional[str] = None) -> None:
+    cmd = [str(python_bin), *args]
+    if target_arch and ARCH_BIN:
+        cmd = [ARCH_BIN, f"-{target_arch}", str(python_bin), *args]
+    subprocess.check_call(cmd)
+
+
+def _create_venv(venv_dir: Path, target_arch: Optional[str]) -> None:
+    python_cmd = ["python3", "-m", "venv", "--copies", str(venv_dir)]
+    if target_arch and ARCH_BIN:
+        python_cmd = [ARCH_BIN, f"-{target_arch}", "python3", "-m", "venv", "--copies", str(venv_dir)]
+    subprocess.check_call(python_cmd)
+
+
+def ensure_venv(target_arch: Optional[str] = None) -> Path:
     """Create or refresh a local venv for embedding."""
-    cfg_path = VENV_EMBED_DIR / "pyvenv.cfg"
+    venv_dir = _venv_dir_for_arch(target_arch)
+    cfg_path = venv_dir / "pyvenv.cfg"
     if cfg_path.exists():
         cfg_text = cfg_path.read_text(encoding="utf-8")
-        if str(VENV_EMBED_DIR) not in cfg_text:
+        if str(venv_dir) not in cfg_text:
             print("♻️  Recreating embedded venv (stale path detected)...")
-            shutil.rmtree(VENV_EMBED_DIR)
-    if not VENV_EMBED_DIR.exists():
-        print("🐍 Creating embedded Python venv...")
-        subprocess.check_call(["python3", "-m", "venv", "--copies", str(VENV_EMBED_DIR)])
+            shutil.rmtree(venv_dir)
+    if not venv_dir.exists():
+        print(f"🐍 Creating embedded Python venv{f' ({target_arch})' if target_arch else ''}...")
+        _create_venv(venv_dir, target_arch)
     # Verify the venv python is runnable (avoid exec format errors)
-    venv_python = VENV_EMBED_DIR / "bin" / "python"
+    venv_python = venv_dir / "bin" / "python"
     try:
-        subprocess.check_call([str(venv_python), "-c", "import sys; print(sys.version)"])
+        _run_python(venv_python, ["-c", "import sys; print(sys.version)"], target_arch)
     except Exception:
         print("♻️  Embedded venv appears invalid for this architecture; recreating...")
-        shutil.rmtree(VENV_EMBED_DIR, ignore_errors=True)
-        subprocess.check_call(["python3", "-m", "venv", "--copies", str(VENV_EMBED_DIR)])
-        venv_python = VENV_EMBED_DIR / "bin" / "python"
+        shutil.rmtree(venv_dir, ignore_errors=True)
+        _create_venv(venv_dir, target_arch)
+        venv_python = venv_dir / "bin" / "python"
     print("📦 Installing Python dependencies into embedded venv...")
     try:
-        subprocess.check_call([str(venv_python), "-m", "pip", "--version"])
+        _run_python(venv_python, ["-m", "pip", "--version"], target_arch)
     except Exception:
         print("♻️  pip appears broken; bootstrapping with ensurepip...")
-        subprocess.check_call([str(venv_python), "-m", "ensurepip", "--upgrade"])
+        _run_python(venv_python, ["-m", "ensurepip", "--upgrade"], target_arch)
     try:
-        subprocess.check_call([str(venv_python), "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"])
-        subprocess.check_call([str(venv_python), "-m", "pip", "install", "-r", str(REQ_FILE)])
+        _run_python(venv_python, ["-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"], target_arch)
+        _run_python(venv_python, ["-m", "pip", "install", "-r", str(REQ_FILE)], target_arch)
     except subprocess.CalledProcessError:
         print("♻️  pip failed; recreating embedded venv and retrying...")
-        shutil.rmtree(VENV_EMBED_DIR, ignore_errors=True)
-        subprocess.check_call(["python3", "-m", "venv", "--copies", str(VENV_EMBED_DIR)])
-        venv_python = VENV_EMBED_DIR / "bin" / "python"
-        subprocess.check_call([str(venv_python), "-m", "ensurepip", "--upgrade"])
-        subprocess.check_call([str(venv_python), "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"])
-        subprocess.check_call([str(venv_python), "-m", "pip", "install", "-r", str(REQ_FILE)])
+        shutil.rmtree(venv_dir, ignore_errors=True)
+        _create_venv(venv_dir, target_arch)
+        venv_python = venv_dir / "bin" / "python"
+        _run_python(venv_python, ["-m", "ensurepip", "--upgrade"], target_arch)
+        _run_python(venv_python, ["-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"], target_arch)
+        _run_python(venv_python, ["-m", "pip", "install", "-r", str(REQ_FILE)], target_arch)
     python_path = venv_python
     check_code = (
         "import importlib.util, sys; "
@@ -74,10 +97,10 @@ def ensure_venv() -> Path:
         "sys.exit(','.join(missing) if missing else 0)"
     )
     try:
-        subprocess.check_call([str(python_path), "-c", check_code])
+        _run_python(python_path, ["-c", check_code], target_arch)
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(f"Missing modules in embedded venv: {exc}") from exc
-    return VENV_EMBED_DIR
+    return venv_dir
 
 def _venv_ignore(_path: str, names):
     ignored = set()
@@ -189,6 +212,29 @@ def patch_python_framework_link(python_bin: Path, framework_path: Path) -> None:
     except Exception as exc:
         print(f"⚠️  Failed to relink Python framework: {exc}")
 
+def _codesign_target(target: Path) -> None:
+    codesign = shutil.which("codesign")
+    if not codesign or not target.exists():
+        return
+    try:
+        subprocess.check_call([codesign, "--force", "--sign", "-", str(target)])
+    except Exception as exc:
+        print(f"⚠️  Failed to codesign {target}: {exc}")
+
+def _sanitize_bundle(app_path: Path) -> None:
+    chmod_bin = shutil.which("chmod")
+    xattr_bin = shutil.which("xattr")
+    if chmod_bin:
+        try:
+            subprocess.check_call([chmod_bin, "-R", "u+w", str(app_path)])
+        except Exception as exc:
+            print(f"⚠️  Failed to chmod bundle: {exc}")
+    if xattr_bin:
+        try:
+            subprocess.check_call([xattr_bin, "-cr", str(app_path)])
+        except Exception as exc:
+            print(f"⚠️  Failed to clear xattrs: {exc}")
+
 def create_simple_app():
     """Create a simple app bundle without py2app."""
     
@@ -292,17 +338,43 @@ def create_simple_app():
             shutil.rmtree(assets_dest)
         shutil.copytree(ASSETS_DIR, assets_dest)
 
-    # Embed Python venv
-    venv_path = ensure_venv()
-    embedded_venv = resources_dir / "venv"
+    # Embed Python venv(s)
     slim_env = os.environ.get("PAYROLL_SLIM_VENV", "").strip().lower()
     slim_mode = slim_env in {"1", "true", "yes", "on"}
     if slim_mode:
         print("⚡ Slim venv mode enabled (PAYROLL_SLIM_VENV=1)")
-    _copy_venv(venv_path, embedded_venv, slim=slim_mode)
+
+    venvs_to_embed = []
+    if ARCH_BIN and LIPO_BIN:
+        python3_path = shutil.which("python3") or "python3"
+        lipo_info = ""
+        try:
+            lipo_info = subprocess.check_output([LIPO_BIN, "-info", python3_path], text=True).strip()
+        except Exception:
+            lipo_info = ""
+        for arch in ("arm64", "x86_64"):
+            if arch in lipo_info:
+                try:
+                    venvs_to_embed.append((arch, ensure_venv(arch)))
+                except Exception as exc:
+                    print(f"⚠️  Failed to build {arch} venv: {exc}")
+
+    if not venvs_to_embed:
+        venvs_to_embed.append((None, ensure_venv()))
+
+    for arch, venv_path in venvs_to_embed:
+        if arch:
+            embedded_venv = resources_dir / f"venv-{arch}"
+        else:
+            embedded_venv = resources_dir / "venv"
+        _copy_venv(venv_path, embedded_venv, slim=slim_mode)
 
     # Bundle Python.framework for portability across machines
-    embedded_python = embedded_venv / "bin" / "python"
+    embedded_python = (resources_dir / "venv-arm64" / "bin" / "python")
+    if not embedded_python.exists():
+        embedded_python = (resources_dir / "venv-x86_64" / "bin" / "python")
+    if not embedded_python.exists():
+        embedded_python = (resources_dir / "venv" / "bin" / "python")
     framework_path = find_python_framework(embedded_python)
     if framework_path:
         bundled_framework = resources_dir / "Python.framework"
@@ -345,24 +417,48 @@ def create_simple_app():
         print("⚠️  Poppler not found via Homebrew; pdftotext will not be embedded.")
     
     # Create launcher script
-    launcher_script = f"""#!/bin/bash
+    launcher_script = """#!/bin/bash
 # Payroll Processor Launcher
 
 # Get the directory where this script is located
-SCRIPT_DIR="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RESOURCES_DIR="$SCRIPT_DIR/../Resources"
 
 # Change to resources directory
 cd "$RESOURCES_DIR"
 
+EMBED_VENV_ARM="$RESOURCES_DIR/venv-arm64"
+EMBED_VENV_X64="$RESOURCES_DIR/venv-x86_64"
 EMBED_VENV="$RESOURCES_DIR/venv"
 EMBED_BIN="$RESOURCES_DIR/bin"
 EMBED_LIB="$RESOURCES_DIR/lib"
 
-if [ -d "$EMBED_VENV" ]; then
+PYTHON_BIN=""
+PYTHON_ARCH=""
+if [ -d "$EMBED_VENV_ARM" ] || [ -d "$EMBED_VENV_X64" ]; then
+    if [ -x "/usr/sbin/sysctl" ] && [ "$(/usr/sbin/sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = "1" ]; then
+        if [ -d "$EMBED_VENV_ARM" ]; then
+            PYTHON_BIN="$EMBED_VENV_ARM/bin/python"
+            PYTHON_ARCH="arm64"
+        elif [ -d "$EMBED_VENV_X64" ]; then
+            PYTHON_BIN="$EMBED_VENV_X64/bin/python"
+            PYTHON_ARCH="x86_64"
+        fi
+    else
+        if [ -d "$EMBED_VENV_X64" ]; then
+            PYTHON_BIN="$EMBED_VENV_X64/bin/python"
+            PYTHON_ARCH="x86_64"
+        elif [ -d "$EMBED_VENV_ARM" ]; then
+            PYTHON_BIN="$EMBED_VENV_ARM/bin/python"
+            PYTHON_ARCH="arm64"
+        fi
+    fi
+elif [ -d "$EMBED_VENV" ]; then
     PYTHON_BIN="$EMBED_VENV/bin/python"
 else
-    osascript -e 'display dialog "Embedded Python not found. Please rebuild the app." buttons {{"OK"}} default button "OK"'
+    /usr/bin/osascript <<EOF
+display dialog "Embedded Python not found. Please rebuild the app." buttons {"OK"} default button "OK"
+EOF
     exit 1
 fi
 
@@ -379,6 +475,7 @@ if [ -d "$RESOURCES_DIR/Python.framework" ]; then
 fi
 
 export PYTHONPATH="$RESOURCES_DIR:$PYTHONPATH"
+export TK_APP_NAME="Payroll Processor"
 
 # Launch the GUI (capture output to a log so Finder launch errors are visible)
 LOG_DIR="$HOME/Library/Logs/Payroll Processor"
@@ -386,14 +483,16 @@ LOG_FILE="$LOG_DIR/app.log"
 mkdir -p "$LOG_DIR"
 
 ARCH_BIN="/usr/bin/arch"
-if [ -x "$ARCH_BIN" ]; then
-    "$ARCH_BIN" -arm64 "$PYTHON_BIN" payroll_gui.py >>"$LOG_FILE" 2>&1
+if [ -n "$PYTHON_ARCH" ] && [ -x "$ARCH_BIN" ]; then
+    "$ARCH_BIN" -"$PYTHON_ARCH" "$PYTHON_BIN" payroll_gui.py >>"$LOG_FILE" 2>&1
 else
     "$PYTHON_BIN" payroll_gui.py >>"$LOG_FILE" 2>&1
 fi
 EXIT_CODE=$?
 if [ $EXIT_CODE -ne 0 ]; then
-    osascript -e 'display dialog "Payroll Processor closed unexpectedly. See log at:'$'\n''"$LOG_FILE"'" buttons {"OK"} default button "OK"'
+    /usr/bin/osascript <<EOF
+display dialog "Payroll Processor closed unexpectedly. See log at:\n$LOG_FILE" buttons {"OK"} default button "OK"
+EOF
 fi
 """
     
@@ -405,6 +504,15 @@ fi
     st = os.stat(launcher_path)
     os.chmod(launcher_path, st.st_mode | stat.S_IEXEC)
     
+    # Prepare bundle for signing and sign embedded Python binaries explicitly
+    _sanitize_bundle(app_path)
+    for rel_path in (
+        "Contents/Resources/venv/bin/python",
+        "Contents/Resources/venv-arm64/bin/python",
+        "Contents/Resources/venv-x86_64/bin/python",
+    ):
+        _codesign_target(app_path / rel_path)
+
     # Sign app bundle (ad-hoc by default, or Developer ID if provided)
     sign_identity = os.environ.get("APPLE_CODESIGN_ID", "-")
     sign_cmd = ["codesign", "--force", "--deep", "--sign", sign_identity]

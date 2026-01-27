@@ -17,6 +17,9 @@ Usage:
 """
 
 import os
+
+# Ensure Tk uses the app name before it initializes the Aqua menubar.
+os.environ["TK_APP_NAME"] = "Payroll Processor"
 import re
 import shutil
 import threading
@@ -118,7 +121,7 @@ class PayrollProcessorGUI:
         self.configure_app_identity()
         self.configure_styles()
 
-        self.root.title("Payment Processor")
+        self.root.title("Payroll Processor")
         self.root.geometry("1200x800")
         self.root.minsize(900, 600)
         
@@ -298,6 +301,7 @@ class PayrollProcessorGUI:
         try:
             if self.root.tk.call('tk', 'windowingsystem') != 'aqua':
                 return
+            os.environ["TK_APP_NAME"] = "Payroll Processor"
             for command in (
                 ('tk', 'appname', 'Payroll Processor'),
                 ('set', '::tk::mac::appname', 'Payroll Processor'),
@@ -5093,8 +5097,8 @@ class PayrollProcessorGUI:
         """Display About dialog."""
         messagebox.showinfo(
             "About Payroll Processor",
-            "Payment Processor\n"
-            "Version 3.0.2\n"
+            "Payroll Processor\n"
+            "Version 3.1.3\n"
             "Author: panlam\n"
             "Processes payroll ZIPs and generates Excel reports."
         )
