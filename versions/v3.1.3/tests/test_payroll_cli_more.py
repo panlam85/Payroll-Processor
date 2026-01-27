@@ -114,6 +114,9 @@ def test_run_query_actions(tmp_path, capsys):
     args = argparse.Namespace(action="latest", format="text", ledger_dir=str(ledger_dir), id=None, limit=None)
     assert payroll_cli.run_query(args) == 0
 
+    args = argparse.Namespace(action="latest", format="json", ledger_dir=str(ledger_dir), id=None, limit=None)
+    assert payroll_cli.run_query(args) == 0
+
     args = argparse.Namespace(action="list", format="json", ledger_dir=str(ledger_dir), id=None, limit=1)
     assert payroll_cli.run_query(args) == 0
 
@@ -127,6 +130,12 @@ def test_run_query_actions(tmp_path, capsys):
     assert payroll_cli.run_query(args) == 0
 
     args = argparse.Namespace(action="stats", format="text", ledger_dir=str(ledger_dir), id="run1", limit=None)
+    assert payroll_cli.run_query(args) == 0
+
+    args = argparse.Namespace(action="outputs", format="json", ledger_dir=str(ledger_dir), id="run1", limit=None)
+    assert payroll_cli.run_query(args) == 0
+
+    args = argparse.Namespace(action="stats", format="json", ledger_dir=str(ledger_dir), id="run1", limit=None)
     assert payroll_cli.run_query(args) == 0
 
 
@@ -167,10 +176,11 @@ def test_run_processing_full_flow(tmp_path, monkeypatch, capsys):
         ledger_dir=str(tmp_path / "ledger"),
         archive_root=None,
         dry_run=False,
-        no_open=True,
+        no_open=False,
         run_id="runfull",
         notes="",
     )
+    monkeypatch.setattr(payroll_cli.subprocess, "run", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("boom")))
     code = payroll_cli.run_processing(args)
     assert code == 0
     output_dir = Path(args.out)
@@ -240,6 +250,33 @@ def test_run_processing_no_data(tmp_path, monkeypatch, capsys):
     assert "No payroll data extracted" in capsys.readouterr().out
 
 
+def test_run_processing_no_valid_csvs(tmp_path, monkeypatch, capsys):
+    pdf = tmp_path / "one.pdf"
+    pdf.write_text("pdf")
+
+    monkeypatch.setattr(
+        payroll_cli.process_payroll,
+        "process_pdf_file",
+        lambda *args, **kwargs: (pd.DataFrame([{"EmployeeCode": "E1"}]), [], []),
+    )
+    monkeypatch.setattr(payroll_cli.create_employee_reports, "load_payroll_data", lambda paths: pd.DataFrame())
+
+    args = argparse.Namespace(
+        zips=[str(pdf)],
+        out=str(tmp_path / "out"),
+        report_prefix="employee_reports",
+        ledger_dir=str(tmp_path / "ledger"),
+        archive_root=None,
+        dry_run=False,
+        no_open=True,
+        run_id="runemptycsv",
+        notes="",
+    )
+    code = payroll_cli.run_processing(args)
+    assert code == 0
+    assert "No valid payroll data found in CSVs." in capsys.readouterr().out
+
+
 def test_run_processing_exception(tmp_path, monkeypatch, capsys):
     pdf = tmp_path / "one.pdf"
     pdf.write_text("pdf")
@@ -282,4 +319,26 @@ def test_run_query_missing_id(tmp_path, capsys):
     entry = {"run_id": "run1", "started_at_epoch": 1.0}
     (ledger_dir / "run_run1.json").write_text(json.dumps(entry))
     args = argparse.Namespace(action="by-id", format="text", ledger_dir=str(ledger_dir), id="missing", limit=None)
+    assert payroll_cli.run_query(args) == 1
+
+
+def test_load_ledgers_missing_dir(tmp_path):
+    missing = tmp_path / "missing"
+    assert payroll_cli._load_ledgers(missing) == []
+
+
+def test_load_ledgers_bad_json(tmp_path):
+    ledger_dir = tmp_path / "ledger"
+    ledger_dir.mkdir()
+    (ledger_dir / "run_bad.json").write_text("{bad json")
+    entries = payroll_cli._load_ledgers(ledger_dir)
+    assert entries == []
+
+
+def test_run_query_unknown_action(tmp_path, capsys):
+    ledger_dir = tmp_path / "ledger"
+    ledger_dir.mkdir()
+    entry = {"run_id": "run1", "started_at_epoch": 1.0}
+    (ledger_dir / "run_run1.json").write_text(json.dumps(entry))
+    args = argparse.Namespace(action="unknown", format="text", ledger_dir=str(ledger_dir), id=None, limit=None)
     assert payroll_cli.run_query(args) == 1
