@@ -1,0 +1,12 @@
+.DS_Store
+.venv/
+dist/
+releases/
+backups/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+*.tmp
+*.swp
