@@ -186,12 +186,7 @@ def find_python_framework(python_bin: Path) -> Optional[Path]:
         return None
     return None
 
-def patch_python_framework_link(python_bin: Path, framework_path: Path) -> None:
-    """Rewrite the Python.framework load path to the bundled copy."""
-    install_tool = shutil.which("install_name_tool")
-    if not install_tool:
-        print("⚠️  install_name_tool not available; skipping framework relink.")
-        return
+def _python_framework_version(python_bin: Path) -> str:
     version = sysconfig.get_config_var("VERSION") or ""
     if not version:
         try:
@@ -201,16 +196,107 @@ def patch_python_framework_link(python_bin: Path, framework_path: Path) -> None:
             ).strip()
         except Exception:
             version = ""
+    return version
+
+
+def _relink_binary(binary: Path, old_path: Path, target_python: Path) -> bool:
+    install_tool = shutil.which("install_name_tool")
+    if not install_tool or not binary.exists():
+        return False
+    try:
+        rel = os.path.relpath(target_python, binary.parent)
+        new_path = f"@executable_path/{rel}"
+        subprocess.check_call([install_tool, "-change", str(old_path), new_path, str(binary)])
+        return True
+    except Exception:
+        return False
+
+
+def _verify_python_framework_links(binaries, framework_prefix: str) -> bool:
+    otool = shutil.which("otool")
+    if not otool:
+        print("⚠️  otool not available; skipping framework link verification.")
+        return True
+    bad = []
+    for binary in binaries:
+        if not binary.exists():
+            continue
+        try:
+            output = subprocess.check_output([otool, "-L", str(binary)], text=True)
+        except Exception:
+            continue
+        for line in output.splitlines():
+            if framework_prefix in line:
+                bad.append(binary)
+                break
+    if bad:
+        print("⚠️  Detected Python framework links to system path:")
+        for binary in bad:
+            print(f"   - {binary}")
+        return False
+    print("✅ Verified bundled Python framework links.")
+    return True
+
+
+def _iter_executables(root: Path):
+    if not root.exists():
+        return []
+    results = []
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            mode = path.stat().st_mode
+        except Exception:
+            continue
+        if mode & stat.S_IXUSR:
+            results.append(path)
+    return results
+
+
+def patch_python_framework_links(python_bins, framework_path: Path, bundled_framework: Path) -> None:
+    """Rewrite Python.framework load paths to the bundled copy."""
+    install_tool = shutil.which("install_name_tool")
+    otool = shutil.which("otool")
+    if not install_tool or not otool:
+        print("⚠️  install_name_tool/otool not available; skipping framework relink.")
+        return
+    version = ""
+    for candidate in python_bins:
+        if candidate.exists():
+            version = _python_framework_version(candidate)
+            if version:
+                break
     if not version:
         print("⚠️  Unable to determine Python framework version; skipping relink.")
         return
     old_path = str(framework_path / "Versions" / version / "Python")
-    new_path = f"@executable_path/../../Python.framework/Versions/{version}/Python"
-    try:
-        subprocess.check_call([install_tool, "-change", old_path, new_path, str(python_bin)])
-        print("✅ Relinked embedded Python to bundled framework.")
-    except Exception as exc:
-        print(f"⚠️  Failed to relink Python framework: {exc}")
+    target_python = bundled_framework / "Versions" / version / "Python"
+    relinked = False
+    binaries = []
+    binaries.extend([p for p in python_bins if p.exists()])
+    binaries.extend(_iter_executables(bundled_framework / "Versions" / version / "Resources" / "Python.app"))
+    binaries.extend(_iter_executables(bundled_framework / "Versions" / version / "bin"))
+    for binary in binaries:
+        try:
+            output = subprocess.check_output([otool, "-L", str(binary)], text=True)
+        except Exception:
+            continue
+        for line in output.splitlines():
+            dep = line.strip().split(" ", 1)[0]
+            if f"Python.framework/Versions/{version}/Python" not in dep:
+                continue
+            rel = os.path.relpath(target_python, binary.parent)
+            new_path = f"@executable_path/{rel}"
+            try:
+                subprocess.check_call([install_tool, "-change", dep, new_path, str(binary)])
+                relinked = True
+            except Exception:
+                continue
+    if relinked:
+        print("✅ Relinked Python binaries to bundled framework.")
+    else:
+        print("⚠️  No Python binaries relinked; app may require system Python.")
 
 def _codesign_target(target: Path) -> None:
     codesign = shutil.which("codesign")
@@ -221,24 +307,75 @@ def _codesign_target(target: Path) -> None:
     except Exception as exc:
         print(f"⚠️  Failed to codesign {target}: {exc}")
 
+def _codesign_bundle(target: Path) -> None:
+    codesign = shutil.which("codesign")
+    if not codesign or not target.exists():
+        return
+    try:
+        subprocess.check_call([codesign, "--force", "--deep", "--sign", "-", str(target)])
+    except Exception as exc:
+        print(f"⚠️  Failed to codesign bundle {target}: {exc}")
+
 def _sanitize_bundle(app_path: Path) -> None:
     chmod_bin = shutil.which("chmod")
     xattr_bin = shutil.which("xattr")
+    dot_clean_bin = shutil.which("dot_clean")
+    find_bin = shutil.which("find")
     if chmod_bin:
         try:
             subprocess.check_call([chmod_bin, "-R", "u+w", str(app_path)])
         except Exception as exc:
             print(f"⚠️  Failed to chmod bundle: {exc}")
+    if find_bin:
+        try:
+            subprocess.check_call([find_bin, str(app_path), "-name", "._*", "-delete"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.check_call([find_bin, str(app_path), "-name", ".DS_Store", "-delete"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
     if xattr_bin:
         try:
-            subprocess.check_call([xattr_bin, "-cr", str(app_path)])
-        except Exception as exc:
-            print(f"⚠️  Failed to clear xattrs: {exc}")
+            subprocess.check_call([xattr_bin, "-dr", "com.apple.provenance", str(app_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.check_call([xattr_bin, "-cr", str(app_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            # xattr may fail on broken symlinks inside frameworks; ignore and continue.
+            try:
+                for path in app_path.rglob("*"):
+                    subprocess.call([xattr_bin, "-d", "com.apple.provenance", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    subprocess.call([xattr_bin, "-cr", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+    if dot_clean_bin:
+        try:
+            subprocess.check_call([dot_clean_bin, "-m", str(app_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+
+    if xattr_bin:
+        attrs_to_clear = [
+            "com.apple.provenance",
+            "com.apple.quarantine",
+            "com.apple.FinderInfo",
+            "com.apple.ResourceFork",
+        ]
+        # Best-effort recursive clear; failures are common on broken symlinks inside frameworks.
+        try:
+            subprocess.check_call([xattr_bin, "-rc", str(app_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+        for root, dirs, files in os.walk(app_path):
+            for name in [*dirs, *files]:
+                path = Path(root) / name
+                if path.is_symlink():
+                    continue
+                for attr in attrs_to_clear:
+                    subprocess.call([xattr_bin, "-d", attr, str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.call([xattr_bin, "-c", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 def create_simple_app():
     """Create a simple app bundle without py2app."""
     
     print("🔧 Creating simple app bundle...")
+    os.environ["COPYFILE_DISABLE"] = "1"
     
     # Clean old builds
     if DIST_DIR.exists():
@@ -382,7 +519,29 @@ def create_simple_app():
             shutil.rmtree(bundled_framework)
         print(f"📦 Bundling Python.framework from {framework_path}...")
         shutil.copytree(framework_path, bundled_framework, symlinks=True)
-        patch_python_framework_link(embedded_python, framework_path)
+        python_bins = [
+            resources_dir / "venv" / "bin" / "python",
+            resources_dir / "venv-arm64" / "bin" / "python",
+            resources_dir / "venv-x86_64" / "bin" / "python",
+        ]
+        patch_python_framework_links(python_bins, framework_path, bundled_framework)
+        version = _python_framework_version(embedded_python)
+        verify_bins = list(python_bins)
+        if version:
+            verify_bins.extend(
+                [
+                    bundled_framework / "Versions" / version / "Resources" / "Python.app" / "Contents" / "MacOS" / "Python",
+                    bundled_framework / "Versions" / version / "bin" / "python",
+                    bundled_framework / "Versions" / version / "bin" / "python3",
+                    bundled_framework / "Versions" / version / "bin" / f"python{version}",
+                ]
+            )
+            verify_bins.extend(_iter_executables(bundled_framework / "Versions" / version / "Resources" / "Python.app"))
+            verify_bins.extend(_iter_executables(bundled_framework / "Versions" / version / "bin"))
+        if not _verify_python_framework_links(verify_bins, "/Library/Frameworks/Python.framework"):
+            raise RuntimeError("Embedded Python still references system Python.framework")
+
+        _codesign_bundle(bundled_framework)
     else:
         print("⚠️  Python.framework not found; app may require system Python.")
 
@@ -512,6 +671,8 @@ fi
         "Contents/Resources/venv-x86_64/bin/python",
     ):
         _codesign_target(app_path / rel_path)
+    if (app_path / "Contents" / "Resources" / "Python.framework").exists():
+        _codesign_bundle(app_path / "Contents" / "Resources" / "Python.framework")
 
     # Sign app bundle (ad-hoc by default, or Developer ID if provided)
     sign_identity = os.environ.get("APPLE_CODESIGN_ID", "-")

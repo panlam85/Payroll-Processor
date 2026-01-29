@@ -316,7 +316,7 @@ EOF
 # Create ZIP package
 print_status "Creating ZIP archive..."
 (
-    cd "$RELEASE_ROOT" && zip -r "$ZIP_BASENAME" "PayrollProcessor_Installer" > /dev/null
+    cd "$RELEASE_ROOT" && zip -r -y "$ZIP_BASENAME" "PayrollProcessor_Installer" > /dev/null
 )
 
 # Create DMG if possible
