@@ -132,6 +132,8 @@ def _copy_venv(src: Path, dst: Path, slim: bool = False) -> None:
                 [
                     rsync_path,
                     "-a",
+                    "--no-xattrs",
+                    "--no-acls",
                     "--delete",
                     "--progress",
                     "--exclude=__pycache__",
@@ -146,7 +148,11 @@ def _copy_venv(src: Path, dst: Path, slim: bool = False) -> None:
             return
         except subprocess.CalledProcessError:
             print("⚠️  rsync failed, falling back to copytree.")
-    shutil.copytree(src, dst, symlinks=True, ignore=_venv_ignore)
+    ditto_bin = shutil.which("ditto")
+    if ditto_bin:
+        subprocess.check_call([ditto_bin, "--norsrc", str(src), str(dst)])
+    else:
+        shutil.copytree(src, dst, symlinks=True, ignore=_venv_ignore)
 
 
 def find_poppler_prefix() -> Optional[Path]:
@@ -315,6 +321,22 @@ def _codesign_bundle(target: Path) -> None:
         subprocess.check_call([codesign, "--force", "--deep", "--sign", "-", str(target)])
     except Exception as exc:
         print(f"⚠️  Failed to codesign bundle {target}: {exc}")
+
+def _strip_resource_forks_with_ditto(app_path: Path) -> None:
+    ditto_bin = shutil.which("ditto")
+    if not ditto_bin or not app_path.exists():
+        return
+    tmp_path = app_path.with_name(app_path.name + ".clean")
+    if tmp_path.exists():
+        shutil.rmtree(tmp_path)
+    try:
+        subprocess.check_call([ditto_bin, "--norsrc", str(app_path), str(tmp_path)])
+        shutil.rmtree(app_path)
+        tmp_path.rename(app_path)
+    except Exception as exc:
+        print(f"⚠️  Failed to strip resource forks: {exc}")
+        if tmp_path.exists():
+            shutil.rmtree(tmp_path, ignore_errors=True)
 
 def _sanitize_bundle(app_path: Path) -> None:
     chmod_bin = shutil.which("chmod")
@@ -518,7 +540,11 @@ def create_simple_app():
         if bundled_framework.exists():
             shutil.rmtree(bundled_framework)
         print(f"📦 Bundling Python.framework from {framework_path}...")
-        shutil.copytree(framework_path, bundled_framework, symlinks=True)
+        ditto_bin = shutil.which("ditto")
+        if ditto_bin:
+            subprocess.check_call([ditto_bin, "--norsrc", str(framework_path), str(bundled_framework)])
+        else:
+            shutil.copytree(framework_path, bundled_framework, symlinks=True)
         python_bins = [
             resources_dir / "venv" / "bin" / "python",
             resources_dir / "venv-arm64" / "bin" / "python",
@@ -664,6 +690,8 @@ fi
     os.chmod(launcher_path, st.st_mode | stat.S_IEXEC)
     
     # Prepare bundle for signing and sign embedded Python binaries explicitly
+    _sanitize_bundle(app_path)
+    _strip_resource_forks_with_ditto(app_path)
     _sanitize_bundle(app_path)
     for rel_path in (
         "Contents/Resources/venv/bin/python",
