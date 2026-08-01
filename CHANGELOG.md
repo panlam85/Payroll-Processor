@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented here. Newer entries go to the top.
 
+## v3.1.4
+- Promoted v3.1.4 as active version and updated root launch/build scripts.
+- Added README.md and an MIT LICENSE; project engineered by PanLam.
+- Added `tests/test_payroll_gui_helpers.py` covering the display-independent
+  helpers on `PayrollProcessorGUI` (117 tests, no Tk root required).
+- Added `tests/test_db_storage_gaps.py` and `tests/test_db_storage_filters.py`;
+  `db_storage` coverage rose from 85% to 92% and the suite from 95 to 236 tests.
+- Fixed the coverage gate: `.coveragerc` pointed at a nonexistent `src`, so it
+  reported 0% and failed despite a fully passing suite.
+- Fixed `bump_version.sh`: it recreated symlinked source directories instead of
+  copying through them, never repointed the root `.coveragerc`, skipped
+  `tests_cli` when copying, and contained a no-op string replacement.
+- Removed a stray duplicate `versions/v3.1.3/v3.1.2/tools/create_icon.py`.
+- Refreshed PROJECT_SUMMARY.md, which still described v1.3 as current.
+
 ## v3.1.3
 - Promoted v3.1.3 as active version and updated root launch/build scripts.
 - Added `payroll_cli` entry point with `run` and `query` subcommands and a `payroll_cli.sh` wrapper.

@@ -57,8 +57,17 @@ copy_file() {
   fi
 }
 
-for dir in assets docs resources scripts src tests tools; do
-  copy_dir "$dir"
+# Copy every real directory rather than a hard-coded list. A fixed list
+# silently drops directories added later — tests_cli was missed this way,
+# and because pytest ignores a missing testpath the loss showed up only as
+# a quietly smaller test count.
+for path in "$SRC_DIR"/*/; do
+  [ -d "$path" ] || continue
+  name="$(basename "$path")"
+  case "$name" in
+    .*|__pycache__|.venv|.pytest_cache|dist|releases|backups) continue ;;
+  esac
+  copy_dir "$name"
 done
 
 for file in requirements.txt requirements-dev.txt pytest.ini .coveragerc; do
@@ -89,12 +98,25 @@ for name in wrappers:
     text = text.replace(f"versions/{old}", f"versions/{new}")
     path.write_text(text, encoding="utf-8")
 
-# Update create_simple_app.py
+# Update create_simple_app.py. It builds its path from separate string
+# literals ("versions" / "vX.Y.Z"), so a "versions/<old>" replacement never
+# matches and the builder would stay pinned to the previous version. The
+# file names the version only for that purpose, so replace it outright.
 app_builder = root / "create_simple_app.py"
 if app_builder.exists():
     text = app_builder.read_text(encoding="utf-8")
-    text = text.replace(f"versions/{old}", f"versions/{new}")
+    text = text.replace(old, new)
     app_builder.write_text(text, encoding="utf-8")
+
+# Update docs that name the active version path, so they do not drift.
+for name in ("README.md", "PROJECT_SUMMARY.md"):
+    path = root / name
+    if not path.exists():
+        continue
+    text = path.read_text(encoding="utf-8")
+    text = text.replace(f"versions/{old}", f"versions/{new}")
+    text = text.replace(f"releases/{old}", f"releases/{new}")
+    path.write_text(text, encoding="utf-8")
 
 # Update root pytest.ini
 pytest_ini = root / "pytest.ini"
