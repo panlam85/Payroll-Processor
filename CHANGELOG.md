@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here. Newer entries go to the top.
 
+## v3.1.3
+- Promoted v3.1.3 as active version and updated root launch/build scripts.
+- Added `payroll_cli` entry point with `run` and `query` subcommands and a `payroll_cli.sh` wrapper.
+- Added `--dry-run` input validation mode to the CLI `run` command.
+- Added a JSON run ledger under `~/Documents/Payroll Processor Reports/.run_ledger/` recording inputs, outputs, metrics, status, and timestamps.
+- Added `query latest`, `query list --limit`, and `query by-id --id` for inspecting past runs.
+- Consolidated the test suite and added dedicated CLI/ledger tests under `tests_cli/`.
+- Refreshed database, export, and refresh icon assets.
+
 ## v3.1.2
 - Promoted v3.1.2 as active version and updated root launch/build scripts.
 - Added signed document import workflow with tidy storage and naming.

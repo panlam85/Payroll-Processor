@@ -35,10 +35,18 @@ fi
 
 mkdir -p "$DST_DIR"
 
+# Copy through symlinks so every version directory is a self-contained real copy.
+# Passing a symlinked source to ditto would recreate the link, leaving the new
+# version pointing back at the old one.
 copy_dir() {
   local name="$1"
-  if [ -e "$SRC_DIR/$name" ]; then
-    /usr/bin/ditto "$SRC_DIR/$name" "$DST_DIR/$name"
+  local src="$SRC_DIR/$name"
+  if [ -e "$src" ]; then
+    # cd -P resolves symlinks, so this is the real directory either way.
+    if [ -d "$src" ]; then
+      src="$(cd -P "$src" && pwd)"
+    fi
+    /usr/bin/ditto "$src" "$DST_DIR/$name"
   fi
 }
 
@@ -96,12 +104,12 @@ if pytest_ini.exists():
     text = text.replace(f"versions/{old}/tests_cli", f"versions/{new}/tests_cli")
     pytest_ini.write_text(text, encoding="utf-8")
 
-# Update version-local pytest.ini
-version_pytest = Path("$DST_DIR") / "pytest.ini"
-if version_pytest.exists():
-    text = version_pytest.read_text(encoding="utf-8")
-    text = text.replace("testpaths = tests tests_cli", "testpaths = tests tests_cli")
-    version_pytest.write_text(text, encoding="utf-8")
+# Update root .coveragerc so the coverage gate follows the active version.
+coveragerc = root / ".coveragerc"
+if coveragerc.exists():
+    text = coveragerc.read_text(encoding="utf-8")
+    text = text.replace(f"versions/{old}/src", f"versions/{new}/src")
+    coveragerc.write_text(text, encoding="utf-8")
 PY
 
 chmod +x "$DST_DIR/scripts"/*.sh || true
