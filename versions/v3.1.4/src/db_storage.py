@@ -2576,3 +2576,563 @@ def mark_entries_paid_for_month(
         with conn.cursor() as cur:
             cur.execute(query, params)
             return cur.rowcount
+
+
+# ---------------------------------------------------------------------------
+# Signed-document flags
+# ---------------------------------------------------------------------------
+
+_SIGNED_COLUMN_CACHE: Dict[tuple, Dict[str, bool]] = {}
+
+SIGNED_COLUMNS = ("signed_employer", "signed_employee", "signed_date")
+
+
+def migrate_signed_flags(config: Dict[str, object]) -> bool:
+    """Add the signed_employer/signed_employee/signed_date columns.
+
+    Returns True when at least one column was created. Safe to call on every
+    start: existing columns are left alone.
+    """
+    _require_psycopg2()
+    added = False
+    try:
+        with get_connection(config) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = 'payroll_entries';"
+                )
+                columns = {row[0] for row in cur.fetchall()}
+                if "signed_employer" not in columns:
+                    cur.execute(
+                        "ALTER TABLE payroll_entries "
+                        "ADD COLUMN signed_employer BOOLEAN DEFAULT FALSE;"
+                    )
+                    added = True
+                if "signed_employee" not in columns:
+                    cur.execute(
+                        "ALTER TABLE payroll_entries "
+                        "ADD COLUMN signed_employee BOOLEAN DEFAULT FALSE;"
+                    )
+                    added = True
+                if "signed_date" not in columns:
+                    cur.execute("ALTER TABLE payroll_entries ADD COLUMN signed_date DATE;")
+                    added = True
+                if added:
+                    conn.commit()
+    except Exception:
+        return False
+    _SIGNED_COLUMN_CACHE.clear()
+    return added
+
+
+def _signed_columns(config: Dict[str, object]) -> Dict[str, bool]:
+    """Return which signed_* columns exist, cached per connection target."""
+    key = (
+        str(config.get("host")),
+        str(config.get("port")),
+        str(config.get("database")),
+        str(config.get("user")),
+    )
+    cached = _SIGNED_COLUMN_CACHE.get(key)
+    if cached is not None:
+        return cached
+    columns: Dict[str, bool] = {}
+    try:
+        with get_connection(config) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = 'payroll_entries';"
+                )
+                present = {row[0] for row in cur.fetchall()}
+                columns = {name: True for name in SIGNED_COLUMNS if name in present}
+    except Exception:
+        columns = {}
+    _SIGNED_COLUMN_CACHE[key] = columns
+    return columns
+
+
+def update_signed_flags(
+    config: Dict[str, object],
+    entry_ids: list,
+    signed_employer: bool = None,
+    signed_employee: bool = None,
+    signed_date=None,
+) -> int:
+    """Set signed flags on specific payroll entries.
+
+    Flags left as None are not touched, so the employer and employee
+    signatures can be recorded independently.
+    """
+    _require_psycopg2()
+    if not entry_ids:
+        return 0
+    columns = _signed_columns(config)
+    assignments = []
+    params = []
+    if signed_employer is not None and "signed_employer" in columns:
+        assignments.append("signed_employer = %s")
+        params.append(bool(signed_employer))
+    if signed_employee is not None and "signed_employee" in columns:
+        assignments.append("signed_employee = %s")
+        params.append(bool(signed_employee))
+    if not assignments:
+        return 0
+    if "signed_date" in columns:
+        assignments.append("signed_date = COALESCE(%s, signed_date, CURRENT_DATE)")
+        params.append(signed_date)
+    params.append(list(entry_ids))
+    query = f"""
+        UPDATE payroll_entries
+        SET {', '.join(assignments)}
+        WHERE id = ANY(%s);
+    """
+    with get_connection(config) as conn:
+        with conn.cursor() as cur:
+            cur.execute(query, params)
+            conn.commit()
+            return cur.rowcount or 0
+
+
+def mark_signed_for_period(
+    config: Dict[str, object],
+    employee_name: str = None,
+    employee_code: str = None,
+    year: int = None,
+    month: int = None,
+    signed_employer: bool = None,
+    signed_employee: bool = None,
+    signed_date=None,
+) -> int:
+    """Flag a whole employee-month as signed.
+
+    This is the hook the signed-document importer uses: a signed PDF names an
+    employee and a period, not individual payroll entry ids.
+    """
+    _require_psycopg2()
+    if not employee_name and not employee_code:
+        return 0
+    if year is None or month is None:
+        return 0
+    columns = _signed_columns(config)
+    assignments = []
+    params = []
+    if signed_employer is not None and "signed_employer" in columns:
+        assignments.append("signed_employer = %s")
+        params.append(bool(signed_employer))
+    if signed_employee is not None and "signed_employee" in columns:
+        assignments.append("signed_employee = %s")
+        params.append(bool(signed_employee))
+    if not assignments:
+        return 0
+    if "signed_date" in columns:
+        assignments.append("signed_date = COALESCE(%s, signed_date, CURRENT_DATE)")
+        params.append(signed_date)
+    conditions = [
+        "EXTRACT(YEAR FROM pe.payment_date) = %s",
+        "EXTRACT(MONTH FROM pe.payment_date) = %s",
+    ]
+    params.extend([year, month])
+    if employee_code:
+        conditions.append("e.employee_code = %s")
+        params.append(employee_code)
+    else:
+        conditions.append("e.full_name = %s")
+        params.append(employee_name)
+    query = f"""
+        UPDATE payroll_entries pe
+        SET {', '.join(assignments)}
+        FROM employees e
+        WHERE pe.employee_id = e.id
+          AND {' AND '.join(conditions)};
+    """
+    with get_connection(config) as conn:
+        with conn.cursor() as cur:
+            cur.execute(query, params)
+            conn.commit()
+            return cur.rowcount or 0
+
+
+def fetch_signed_status_summary(
+    config: Dict[str, object],
+    start_date=None,
+    end_date=None,
+    search: str = None,
+):
+    """Return per-month counts of fully/partially/un-signed entries."""
+    _require_psycopg2()
+    columns = _signed_columns(config)
+    if "signed_employer" not in columns or "signed_employee" not in columns:
+        return []
+    conditions = []
+    params = []
+    _append_date_range(conditions, params, "pe.payment_date", start_date, end_date)
+    _append_search_conditions(
+        conditions, params, search, ["e.full_name", "e.employee_code"]
+    )
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else "WHERE TRUE"
+    query = f"""
+        SELECT
+            EXTRACT(YEAR FROM pe.payment_date)::INT AS year,
+            EXTRACT(MONTH FROM pe.payment_date)::INT AS month,
+            COUNT(*) AS total_entries,
+            COUNT(*) FILTER (
+                WHERE COALESCE(pe.signed_employer, FALSE)
+                  AND COALESCE(pe.signed_employee, FALSE)
+            ) AS fully_signed,
+            COUNT(*) FILTER (
+                WHERE COALESCE(pe.signed_employer, FALSE) <> COALESCE(pe.signed_employee, FALSE)
+            ) AS partially_signed,
+            COUNT(*) FILTER (
+                WHERE NOT COALESCE(pe.signed_employer, FALSE)
+                  AND NOT COALESCE(pe.signed_employee, FALSE)
+            ) AS unsigned_entries
+        FROM payroll_entries pe
+        JOIN employees e ON e.id = pe.employee_id
+        {where_clause}
+        GROUP BY year, month
+        ORDER BY year, month;
+    """
+    with get_connection(config) as conn:
+        with conn.cursor() as cur:
+            cur.execute(query, params)
+            return cur.fetchall()
+
+
+# ---------------------------------------------------------------------------
+# Period-over-period comparison
+# ---------------------------------------------------------------------------
+
+
+def fetch_period_comparison(
+    config: Dict[str, object],
+    year: int,
+    month: int,
+    document_type: str = None,
+    search: str = None,
+):
+    """Compare a month against the one before it.
+
+    Returns a dict of metric -> {"current", "previous", "delta", "pct_change"}
+    covering net pay, employer cost, employee/employer insurance, entry count
+    and distinct employee count. pct_change is None when the previous month is
+    zero, so callers can render "n/a" instead of a misleading infinity.
+    """
+    _require_psycopg2()
+    if year is None or month is None:
+        return {}
+    prev_year, prev_month = (year - 1, 12) if month == 1 else (year, month - 1)
+
+    conditions = []
+    params = []
+    if document_type:
+        conditions.append("pe.document_type = %s")
+        params.append(document_type)
+    _append_search_conditions(
+        conditions, params, search, ["e.full_name", "e.employee_code"]
+    )
+    extra = f" AND {' AND '.join(conditions)}" if conditions else ""
+
+    query = f"""
+        SELECT
+            EXTRACT(YEAR FROM pe.payment_date)::INT AS year,
+            EXTRACT(MONTH FROM pe.payment_date)::INT AS month,
+            COALESCE(SUM(pe.net_pay), 0) AS net_pay,
+            COALESCE(SUM(ic.efka_employee + ic.teka_employee), 0) AS employee_insurance,
+            COALESCE(SUM(ic.efka_employer + ic.teka_employer), 0) AS employer_insurance,
+            COALESCE(SUM(pe.net_pay + ic.efka_employer + ic.teka_employer), 0) AS employer_cost,
+            COUNT(*) AS entry_count,
+            COUNT(DISTINCT pe.employee_id) AS employee_count
+        FROM payroll_entries pe
+        JOIN insurance_contributions ic ON ic.payroll_entry_id = pe.id
+        JOIN employees e ON e.id = pe.employee_id
+        WHERE (
+                (EXTRACT(YEAR FROM pe.payment_date) = %s AND EXTRACT(MONTH FROM pe.payment_date) = %s)
+             OR (EXTRACT(YEAR FROM pe.payment_date) = %s AND EXTRACT(MONTH FROM pe.payment_date) = %s)
+        ){extra}
+        GROUP BY year, month;
+    """
+    period_params = [year, month, prev_year, prev_month] + params
+    with get_connection(config) as conn:
+        with conn.cursor() as cur:
+            cur.execute(query, period_params)
+            rows = cur.fetchall()
+
+    metrics = (
+        "net_pay",
+        "employee_insurance",
+        "employer_insurance",
+        "employer_cost",
+        "entry_count",
+        "employee_count",
+    )
+    buckets = {}
+    for row in rows:
+        buckets[(row[0], row[1])] = dict(zip(metrics, row[2:]))
+
+    current = buckets.get((year, month), {})
+    previous = buckets.get((prev_year, prev_month), {})
+
+    result = {}
+    for metric in metrics:
+        cur_value = float(current.get(metric) or 0)
+        prev_value = float(previous.get(metric) or 0)
+        delta = cur_value - prev_value
+        pct = (delta / prev_value * 100.0) if prev_value else None
+        result[metric] = {
+            "current": cur_value,
+            "previous": prev_value,
+            "delta": delta,
+            "pct_change": pct,
+        }
+    result["period"] = {"year": year, "month": month}
+    result["previous_period"] = {"year": prev_year, "month": prev_month}
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Time comparisons, workforce and payment-status analytics
+# ---------------------------------------------------------------------------
+
+
+def fetch_employer_cost_ratio_by_month(
+    config: Dict[str, object],
+    start_date=None,
+    end_date=None,
+    document_type: str = None,
+    search: str = None,
+):
+    """Return (year, month, net_pay, employer_cost, ratio) per month.
+
+    ratio is employer cost divided by net pay, i.e. what each euro of take-home
+    pay actually costs. NULLIF guards the divide so a zero-net-pay month gives
+    NULL rather than raising.
+    """
+    _require_psycopg2()
+    conditions = []
+    params = []
+    _append_date_range(conditions, params, "pe.payment_date", start_date, end_date)
+    if document_type:
+        conditions.append("pe.document_type = %s")
+        params.append(document_type)
+    _append_search_conditions(
+        conditions, params, search, ["e.full_name", "e.employee_code"]
+    )
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else "WHERE TRUE"
+    query = f"""
+        SELECT
+            EXTRACT(YEAR FROM pe.payment_date)::INT AS year,
+            EXTRACT(MONTH FROM pe.payment_date)::INT AS month,
+            COALESCE(SUM(pe.net_pay), 0) AS net_pay,
+            COALESCE(SUM(pe.net_pay + ic.efka_employer + ic.teka_employer), 0) AS employer_cost,
+            COALESCE(SUM(pe.net_pay + ic.efka_employer + ic.teka_employer), 0)
+                / NULLIF(SUM(pe.net_pay), 0) AS cost_ratio
+        FROM payroll_entries pe
+        JOIN insurance_contributions ic ON ic.payroll_entry_id = pe.id
+        JOIN employees e ON e.id = pe.employee_id
+        {where_clause}
+        GROUP BY year, month
+        ORDER BY year, month;
+    """
+    with get_connection(config) as conn:
+        with conn.cursor() as cur:
+            cur.execute(query, params)
+            return cur.fetchall()
+
+
+def fetch_headcount_trend(
+    config: Dict[str, object],
+    start_date=None,
+    end_date=None,
+    search: str = None,
+):
+    """Return (year, month, headcount, joiners, leavers) per month.
+
+    A joiner is an employee whose first-ever payment falls in that month; a
+    leaver is one whose last-ever payment does. First/last are computed across
+    all history, not the filtered window, so an employee who simply predates
+    the window is not miscounted as a joiner.
+    """
+    _require_psycopg2()
+    conditions = []
+    params = []
+    _append_date_range(conditions, params, "pe.payment_date", start_date, end_date)
+    _append_search_conditions(
+        conditions, params, search, ["e.full_name", "e.employee_code"]
+    )
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else "WHERE TRUE"
+    query = f"""
+        WITH bounds AS (
+            SELECT
+                pe.employee_id,
+                MIN(pe.payment_date) AS first_paid,
+                MAX(pe.payment_date) AS last_paid
+            FROM payroll_entries pe
+            GROUP BY pe.employee_id
+        ),
+        monthly AS (
+            SELECT DISTINCT
+                EXTRACT(YEAR FROM pe.payment_date)::INT AS year,
+                EXTRACT(MONTH FROM pe.payment_date)::INT AS month,
+                pe.employee_id
+            FROM payroll_entries pe
+            JOIN employees e ON e.id = pe.employee_id
+            {where_clause}
+        )
+        SELECT
+            m.year,
+            m.month,
+            COUNT(*) AS headcount,
+            COUNT(*) FILTER (
+                WHERE EXTRACT(YEAR FROM b.first_paid) = m.year
+                  AND EXTRACT(MONTH FROM b.first_paid) = m.month
+            ) AS joiners,
+            COUNT(*) FILTER (
+                WHERE EXTRACT(YEAR FROM b.last_paid) = m.year
+                  AND EXTRACT(MONTH FROM b.last_paid) = m.month
+            ) AS leavers
+        FROM monthly m
+        JOIN bounds b ON b.employee_id = m.employee_id
+        GROUP BY m.year, m.month
+        ORDER BY m.year, m.month;
+    """
+    with get_connection(config) as conn:
+        with conn.cursor() as cur:
+            cur.execute(query, params)
+            return cur.fetchall()
+
+
+def fetch_net_pay_distribution(
+    config: Dict[str, object],
+    start_date=None,
+    end_date=None,
+    document_type: str = None,
+    search: str = None,
+):
+    """Return (year, month, avg, median, p25, p75, headcount) of monthly pay.
+
+    Averages and medians are taken over per-employee monthly totals, not over
+    individual entries, so an employee paid a salary plus a bonus counts once.
+    A median far below the average means a few large earners are pulling the
+    average up.
+    """
+    _require_psycopg2()
+    conditions = []
+    params = []
+    _append_date_range(conditions, params, "pe.payment_date", start_date, end_date)
+    if document_type:
+        conditions.append("pe.document_type = %s")
+        params.append(document_type)
+    _append_search_conditions(
+        conditions, params, search, ["e.full_name", "e.employee_code"]
+    )
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else "WHERE TRUE"
+    query = f"""
+        WITH per_employee AS (
+            SELECT
+                EXTRACT(YEAR FROM pe.payment_date)::INT AS year,
+                EXTRACT(MONTH FROM pe.payment_date)::INT AS month,
+                pe.employee_id,
+                SUM(pe.net_pay) AS employee_net_pay
+            FROM payroll_entries pe
+            JOIN employees e ON e.id = pe.employee_id
+            {where_clause}
+            GROUP BY year, month, pe.employee_id
+        )
+        SELECT
+            year,
+            month,
+            AVG(employee_net_pay) AS avg_net_pay,
+            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY employee_net_pay) AS median_net_pay,
+            PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY employee_net_pay) AS p25_net_pay,
+            PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY employee_net_pay) AS p75_net_pay,
+            COUNT(*) AS headcount
+        FROM per_employee
+        GROUP BY year, month
+        ORDER BY year, month;
+    """
+    with get_connection(config) as conn:
+        with conn.cursor() as cur:
+            cur.execute(query, params)
+            return cur.fetchall()
+
+
+def fetch_entry_jumps(
+    config: Dict[str, object],
+    start_date=None,
+    end_date=None,
+    document_type: str = None,
+    search: str = None,
+    threshold_pct: float = 30.0,
+    min_amount: float = 50.0,
+    limit: int = 50,
+):
+    """Return month-over-month jumps per employee and document type.
+
+    Unlike fetch_anomaly_entries, which flags outliers against a global
+    average, this compares each employee's own prior month for the same
+    document type. Rows are returned only when the change exceeds
+    threshold_pct and the absolute delta exceeds min_amount, so tiny amounts
+    with large percentage swings do not dominate.
+    """
+    _require_psycopg2()
+    conditions = []
+    params = []
+    _append_date_range(conditions, params, "pe.payment_date", start_date, end_date)
+    if document_type:
+        conditions.append("pe.document_type = %s")
+        params.append(document_type)
+    _append_search_conditions(
+        conditions, params, search, ["e.full_name", "e.employee_code"]
+    )
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else "WHERE TRUE"
+    query = f"""
+        WITH monthly AS (
+            SELECT
+                e.full_name AS employee_name,
+                e.employee_code,
+                pe.document_type,
+                DATE_TRUNC('month', pe.payment_date)::DATE AS period,
+                SUM(pe.net_pay) AS net_pay
+            FROM payroll_entries pe
+            JOIN employees e ON e.id = pe.employee_id
+            {where_clause}
+            GROUP BY e.full_name, e.employee_code, pe.document_type, period
+        ),
+        changes AS (
+            SELECT
+                employee_name,
+                employee_code,
+                document_type,
+                period,
+                net_pay,
+                LAG(net_pay) OVER (
+                    PARTITION BY employee_code, document_type ORDER BY period
+                ) AS prev_net_pay
+            FROM monthly
+        )
+        SELECT
+            employee_name,
+            employee_code,
+            document_type,
+            period,
+            prev_net_pay,
+            net_pay,
+            net_pay - prev_net_pay AS delta,
+            (net_pay - prev_net_pay) / NULLIF(prev_net_pay, 0) * 100 AS pct_change
+        FROM changes
+        WHERE prev_net_pay IS NOT NULL
+          AND prev_net_pay <> 0
+          AND ABS(net_pay - prev_net_pay) >= %s
+          AND ABS((net_pay - prev_net_pay) / NULLIF(prev_net_pay, 0) * 100) >= %s
+        ORDER BY ABS((net_pay - prev_net_pay) / NULLIF(prev_net_pay, 0)) DESC
+        LIMIT %s;
+    """
+    params = params + [min_amount, threshold_pct, limit]
+    with get_connection(config) as conn:
+        with conn.cursor() as cur:
+            cur.execute(query, params)
+            rows = cur.fetchall()
+            columns = [desc[0] for desc in cur.description]
+    return columns, rows

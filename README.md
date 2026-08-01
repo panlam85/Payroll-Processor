@@ -21,12 +21,16 @@ compensation, and EFKA/TEKA insurance claims.
 - Transfer-receipt parsing that marks entries paid by name, IBAN, or amount
 - IBAN and beneficiary extraction, auto-linked to employee profiles
 - Watch-folder auto-processing on a configurable interval
-- Signed-document import and archiving
+- Signed-document import and archiving, with automatic employer/employee signature flags
+- Payment receipts merged into the employee's monthly payment PDF
 
 **Analysis**
-- Dashboard with KPIs and alerts
+- Dashboard with KPIs, alerts, and current-vs-last-month comparisons
 - Analytics data grid with multi-term search (AND/OR/NOT), sorting, and inline editing with undo/redo
 - Analytics charts: monthly burn, insurance breakdown, cost per employee, document mix, payment heat-map, year-over-year
+- Workforce charts: headcount trend with joiners and leavers, median vs average pay with an interquartile band
+- Employer cost per euro of take-home pay, tracked over time
+- Sudden-jump detection comparing each employee against their own prior month
 - Insurance tab comparing calculated against official EFKA/TEKA figures
 - Employee profiles with monthly totals, pay rates, and payment history
 
@@ -145,12 +149,12 @@ directory; older versions are history and should not be edited.
 ### Tests
 
 ```bash
-versions/v3.1.4/.venv/bin/python -m pytest -q                                    # 236 tests
+versions/v3.1.4/.venv/bin/python -m pytest -q                                    # 283 tests
 versions/v3.1.4/.venv/bin/python -m pytest -q --cov --cov-config=.coveragerc     # with the gate
 ```
 
 The coverage gate is 65%. The parsing, storage, and CLI core currently sits at
-**94.7%**:
+**94.6%**:
 
 | Module | Coverage |
 |---|---|
@@ -169,6 +173,7 @@ uninitialized instance and needs no window server.
 
 ## Documentation
 
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — **start here to branch, extend, or fork this project**
 - [`CHANGELOG.md`](CHANGELOG.md) — release history
 - [`AGENTS.md`](AGENTS.md) — architecture and data-flow notes for contributors
 - [`PROJECT_SUMMARY.md`](PROJECT_SUMMARY.md) — feature overview and usage detail
