@@ -56,6 +56,7 @@ from theme_config import get_theme_tokens
 
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
+from matplotlib.ticker import FuncFormatter
 import matplotlib.pyplot as plt
 import db_storage
 
@@ -107,7 +108,37 @@ class Tooltip:
 
 class PayrollProcessorGUI:
     """Main GUI application for payroll processing."""
-    
+
+    # Analytics charts, grouped by the question they answer. Each group is one
+    # tab holding a grid of chart cards.
+    CHART_GROUPS = (
+        ("Spend", (
+            ("monthly", "Monthly Payroll Burn"),
+            ("doc_type", "Salary vs Bonus vs Allowances"),
+            ("employee", "Cost Per Employee"),
+            ("cost_ratio", "Employer Cost per € of Net Pay"),
+        )),
+        ("Trends", (
+            ("same_month_yoy", "Same Month Across Years"),
+            ("ytd_compare", "YTD vs Prior YTD"),
+            ("rolling_yoy", "Rolling 12-Month YoY"),
+        )),
+        ("Insurance", (
+            ("insurance", "Insurance Breakdown"),
+            ("insurance_burden", "Insurance Burden %"),
+        )),
+        ("Payments", (
+            ("heatmap", "Payment Heat-map"),
+            ("paid_aging", "Paid vs Unpaid + Aging"),
+            ("avg_days_paid", "Avg Days to Paid"),
+        )),
+        ("Workforce", (
+            ("headcount", "Headcount Trend"),
+            ("pay_distribution", "Median vs Average Pay"),
+        )),
+    )
+
+
     def __init__(self):
         """Initialize the GUI application."""
         # Create main window
@@ -227,6 +258,9 @@ class PayrollProcessorGUI:
         self.nav_history = []
         self.nav_restoring = False
         self.dashboard_summary_labels = []
+        self.toasts = []
+        self._db_notice_panels = {}
+        self._async_tokens = {}
         
         # Create GUI elements
         self.create_widgets()
@@ -250,8 +284,8 @@ class PayrollProcessorGUI:
 
         self.root.bind("<Configure>", self._schedule_geometry_save)
 
-    def configure_styles(self):
-        """Configure ttk styles for a cohesive UI."""
+    def resolve_theme(self):
+        """Return the tokens for the appearance the user asked for."""
         theme_mode = self.theme_mode_var.get() if hasattr(self, "theme_mode_var") else "auto"
         if theme_mode == "dark":
             is_dark = True
@@ -264,11 +298,19 @@ class PayrollProcessorGUI:
             except tk.TclError:
                 appearance = None
             is_dark = bool(appearance and str(appearance).lower() == "dark")
-        tokens = get_theme_tokens(is_dark)
+        return theme_mode, get_theme_tokens(is_dark)
+
+    def configure_styles(self):
+        """Configure ttk styles for a cohesive UI."""
+        theme_mode, tokens = self.resolve_theme()
+        self.theme = tokens
 
         self.root.configure(bg=tokens.bg)
         style = ttk.Style()
+        self.style = style
         try:
+            # clam honours background/foreground options that aqua ignores, so
+            # an explicit light/dark choice needs it to actually take effect.
             if theme_mode in ("light", "dark"):
                 style.theme_use("clam")
             else:
@@ -279,19 +321,205 @@ class PayrollProcessorGUI:
         style.configure("Card.TFrame", background=tokens.surface, relief="solid", borderwidth=1)
         style.configure("CardTitle.TLabel", background=tokens.surface, foreground=tokens.text_secondary, font=(tokens.font_base, 11))
         style.configure("CardValue.TLabel", background=tokens.surface, foreground=tokens.text_primary, font=(tokens.font_base, 18, "bold"))
+        style.configure("CardDelta.TLabel", background=tokens.surface, foreground=tokens.text_secondary, font=(tokens.font_base, 11))
+        style.configure("CardDeltaUp.TLabel", background=tokens.surface, foreground=tokens.positive, font=(tokens.font_base, 11, "bold"))
+        style.configure("CardDeltaDown.TLabel", background=tokens.surface, foreground=tokens.negative, font=(tokens.font_base, 11, "bold"))
         style.configure("Header.TLabel", background=tokens.bg, foreground=tokens.text_primary, font=(tokens.font_base, 16, "bold"))
         style.configure("Section.TLabel", background=tokens.bg, foreground=tokens.text_primary, font=(tokens.font_base, 13, "bold"))
         style.configure("Body.TLabel", background=tokens.bg, foreground=tokens.text_secondary, font=(tokens.font_base, 11))
+        style.configure("Hint.TLabel", background=tokens.bg, foreground=tokens.muted, font=(tokens.font_base, 10))
+        style.configure("Warning.TLabel", background=tokens.bg, foreground=tokens.warning, font=(tokens.font_base, 11))
         style.configure("App.TLabelframe", background=tokens.bg)
         style.configure("App.TLabelframe.Label", background=tokens.bg, foreground=tokens.text_primary, font=(tokens.font_base, 11, "bold"))
         style.configure("App.TNotebook", background=tokens.bg)
         style.configure("App.TNotebook.Tab", padding=(12, 6), font=(tokens.font_base, 11))
-        style.configure("Sidebar.TButton", padding=(12, 8), font=(tokens.font_base, 11))
-        style.configure("SidebarActive.TButton", padding=(12, 8), font=(tokens.font_base, 11, "bold"))
-        style.configure("Treeview", background=tokens.surface, fieldbackground=tokens.surface, foreground=tokens.text_primary, bordercolor=tokens.border)
+        style.configure("App.TSeparator", background=tokens.border)
+
+        # Empty states: a bordered surface panel with a title and a hint.
+        style.configure("Empty.TFrame", background=tokens.surface, relief="solid", borderwidth=1)
+        style.configure("EmptyTitle.TLabel", background=tokens.surface, foreground=tokens.text_primary, font=(tokens.font_base, 13, "bold"))
+        style.configure("EmptyBody.TLabel", background=tokens.surface, foreground=tokens.text_secondary, font=(tokens.font_base, 11))
+
+        # Filter chips.
+        style.configure("Chip.TFrame", background=tokens.selection, relief="flat", borderwidth=0)
+        style.configure("Chip.TLabel", background=tokens.selection, foreground=tokens.text_primary, font=(tokens.font_base, 10))
+
+        self._configure_button_styles(style, tokens)
+
+        style.configure(
+            "Treeview",
+            background=tokens.surface,
+            fieldbackground=tokens.surface,
+            foreground=tokens.text_primary,
+            bordercolor=tokens.border,
+            rowheight=22,
+        )
+        style.map(
+            "Treeview",
+            background=[("selected", tokens.selection)],
+            foreground=[("selected", tokens.text_primary)],
+        )
         style.configure("Treeview.Heading", background=tokens.bg, foreground=tokens.text_primary, font=(tokens.font_base, 11, "bold"))
         style.layout("Hidden.TNotebook.Tab", [])
         style.layout("Hidden.TNotebook", [("Notebook.client", {"sticky": "nswe"})])
+
+    def _configure_button_styles(self, style, tokens):
+        """Give the primary and destructive actions their own weight.
+
+        Aqua draws its own button chrome and ignores background/foreground, so
+        on the automatic appearance the emphasis falls back to a bold label -
+        which is still a visible difference from the neutral buttons beside it.
+        """
+        style.configure(
+            "Accent.TButton",
+            background=tokens.accent,
+            foreground=tokens.accent_text,
+            bordercolor=tokens.accent,
+            focuscolor=tokens.accent,
+            padding=(14, 7),
+            font=(tokens.font_base, 11, "bold"),
+        )
+        style.map(
+            "Accent.TButton",
+            background=[("pressed", tokens.accent_active), ("active", tokens.accent_active), ("disabled", tokens.border)],
+            foreground=[("disabled", tokens.text_secondary)],
+        )
+        style.configure(
+            "Danger.TButton",
+            background=tokens.danger,
+            foreground=tokens.danger_text,
+            bordercolor=tokens.danger,
+            focuscolor=tokens.danger,
+            padding=(12, 6),
+            font=(tokens.font_base, 11, "bold"),
+        )
+        style.map(
+            "Danger.TButton",
+            background=[("pressed", tokens.danger_active), ("active", tokens.danger_active), ("disabled", tokens.border)],
+            foreground=[("disabled", tokens.text_secondary)],
+        )
+        style.configure("Sidebar.TButton", padding=(12, 8), font=(tokens.font_base, 11), anchor=tk.W)
+        style.configure(
+            "SidebarActive.TButton",
+            padding=(12, 8),
+            font=(tokens.font_base, 11, "bold"),
+            anchor=tk.W,
+            background=tokens.accent,
+            foreground=tokens.accent_text,
+            bordercolor=tokens.accent,
+            focuscolor=tokens.accent,
+        )
+        style.map(
+            "SidebarActive.TButton",
+            background=[("pressed", tokens.accent_active), ("active", tokens.accent_active)],
+            foreground=[("pressed", tokens.accent_text), ("active", tokens.accent_text)],
+        )
+        style.configure("Chip.TButton", padding=(4, 0), font=(tokens.font_base, 10))
+
+    # ------------------------------------------------------------------
+    # Chart styling
+    # ------------------------------------------------------------------
+
+    def _series_color(self, index):
+        """Nth colour of the shared series palette, wrapping if needed."""
+        palette = self.theme.chart_series
+        return palette[index % len(palette)]
+
+    def _format_axis_amount(self, value, _pos=None):
+        """Compact euro tick label: € 1.2k, € 3.4M."""
+        try:
+            amount = float(value)
+        except (TypeError, ValueError):
+            return ""
+        magnitude = abs(amount)
+        if magnitude >= 1_000_000:
+            return f"€ {amount / 1_000_000:,.1f}M"
+        if magnitude >= 1_000:
+            return f"€ {amount / 1_000:,.1f}k"
+        return f"€ {amount:,.0f}"
+
+    def _style_axes(self, ax, currency=False, percent=False, suffix=None, rotate=None,
+                    grid_axis="y", tight=True):
+        """Apply the app's appearance to a matplotlib axes.
+
+        Every ``_plot_*`` method ends with this call, so the figures follow the
+        light/dark theme, drop their top and right spines, get a soft grid and
+        read their amounts in euros rather than raw floats.
+        """
+        tokens = getattr(self, "theme", None)
+        if tokens is None:
+            return
+        fig = ax.get_figure()
+        fig.set_facecolor(tokens.chart_bg)
+        ax.set_facecolor(tokens.chart_bg)
+
+        for name, spine in ax.spines.items():
+            if name in ("top", "right"):
+                spine.set_visible(False)
+            else:
+                spine.set_color(tokens.border)
+        ax.tick_params(colors=tokens.text_secondary, labelsize=9, length=3, width=0.8)
+        ax.xaxis.label.set_color(tokens.text_secondary)
+        ax.yaxis.label.set_color(tokens.text_secondary)
+        ax.xaxis.label.set_fontsize(10)
+        ax.yaxis.label.set_fontsize(10)
+        ax.title.set_color(tokens.text_primary)
+        ax.title.set_fontsize(12)
+        ax.title.set_fontweight("bold")
+
+        if grid_axis:
+            ax.grid(True, axis=grid_axis, color=tokens.chart_grid, linewidth=0.8)
+            ax.set_axisbelow(True)
+        else:
+            ax.grid(False)
+
+        if currency:
+            ax.yaxis.set_major_formatter(FuncFormatter(self._format_axis_amount))
+        elif percent:
+            ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _p: f"{v:,.0f}%"))
+        elif suffix:
+            ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _p: f"{v:,.0f}{suffix}"))
+
+        if rotate:
+            for label in ax.get_xticklabels():
+                label.set_rotation(rotate)
+                label.set_horizontalalignment("right")
+
+        legend = ax.get_legend()
+        if legend is not None:
+            frame = legend.get_frame()
+            frame.set_facecolor(tokens.chart_bg)
+            frame.set_edgecolor(tokens.border)
+            frame.set_alpha(0.95)
+            for text in legend.get_texts():
+                text.set_color(tokens.text_secondary)
+                text.set_fontsize(9)
+
+        if tight:
+            try:
+                fig.tight_layout()
+            except Exception:
+                # A colourbar or a constrained layout can refuse; the chart is
+                # still readable without the reflow.
+                pass
+
+    def _empty_axes(self, ax, title, message="No data for the current filters"):
+        """Draw a titled placeholder instead of an empty grid."""
+        tokens = getattr(self, "theme", None)
+        ax.set_title(title)
+        ax.text(
+            0.5,
+            0.5,
+            message,
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+            color=tokens.muted if tokens else "#6B7280",
+            fontsize=11,
+        )
+        ax.set_xticks([])
+        ax.set_yticks([])
+        self._style_axes(ax, grid_axis=None)
 
     def configure_app_identity(self):
         """Ensure the app name shows as Payroll Processor on macOS."""
@@ -379,66 +607,101 @@ class PayrollProcessorGUI:
         main_frame.rowconfigure(1, weight=0)
         main_frame.rowconfigure(2, weight=1)
 
+        # The filter bar drives every view, so it is grouped rather than laid
+        # out as one long row of unlabelled controls: period, document, search,
+        # then the state of the filters as removable chips underneath.
         self.global_filter_bar = ttk.Frame(main_frame, style="App.TFrame")
-        self.global_filter_bar.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 12))
-        self.global_filter_bar.columnconfigure(13, weight=1)
+        self.global_filter_bar.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        # Column 2 takes the slack so the state and the reset control stay right
+        # aligned while the filter groups keep their natural width.
+        self.global_filter_bar.columnconfigure(2, weight=1)
 
-        ttk.Label(self.global_filter_bar, text="Filters", style="Section.TLabel").grid(row=0, column=0, padx=(0, 10))
+        controls = ttk.Frame(self.global_filter_bar, style="App.TFrame")
+        controls.grid(row=0, column=0, sticky=(tk.W, tk.E))
+        self.filter_controls = controls
 
-        ttk.Label(self.global_filter_bar, text="Start", style="Body.TLabel").grid(row=0, column=1, padx=(0, 6))
-        self.global_start_year_combo = ttk.Combobox(self.global_filter_bar, textvariable=self.global_start_year_var, state="readonly", width=8)
-        self.global_start_year_combo.grid(row=0, column=2, padx=(0, 6))
+        period_group = ttk.Frame(controls, style="App.TFrame")
+        period_group.pack(side=tk.LEFT, padx=(0, 18))
+        ttk.Label(period_group, text="Period", style="Body.TLabel").pack(side=tk.LEFT, padx=(0, 8))
+        self.global_start_year_combo = ttk.Combobox(period_group, textvariable=self.global_start_year_var, state="readonly", width=7)
+        self.global_start_year_combo.pack(side=tk.LEFT, padx=(0, 4))
         self.global_start_year_combo.bind("<<ComboboxSelected>>", self._on_global_year_change)
         self.global_start_year_combo["values"] = ["All"]
 
-        self.global_start_month_combo = ttk.Combobox(self.global_filter_bar, textvariable=self.global_start_month_var, state="readonly", width=6)
-        self.global_start_month_combo.grid(row=0, column=3, padx=(0, 10))
+        self.global_start_month_combo = ttk.Combobox(period_group, textvariable=self.global_start_month_var, state="readonly", width=4)
+        self.global_start_month_combo.pack(side=tk.LEFT)
         self.global_start_month_combo["values"] = [f"{month:02d}" for month in range(1, 13)]
         self.global_start_month_combo.bind("<<ComboboxSelected>>", self._on_global_filter_change)
 
-        ttk.Label(self.global_filter_bar, text="End", style="Body.TLabel").grid(row=0, column=4, padx=(0, 6))
-        self.global_end_year_combo = ttk.Combobox(self.global_filter_bar, textvariable=self.global_end_year_var, state="readonly", width=8)
-        self.global_end_year_combo.grid(row=0, column=5, padx=(0, 6))
+        ttk.Label(period_group, text="→", style="Body.TLabel").pack(side=tk.LEFT, padx=6)
+
+        self.global_end_year_combo = ttk.Combobox(period_group, textvariable=self.global_end_year_var, state="readonly", width=7)
+        self.global_end_year_combo.pack(side=tk.LEFT, padx=(0, 4))
         self.global_end_year_combo.bind("<<ComboboxSelected>>", self._on_global_filter_change)
         self.global_end_year_combo["values"] = ["All"]
 
-        self.global_end_month_combo = ttk.Combobox(self.global_filter_bar, textvariable=self.global_end_month_var, state="readonly", width=6)
-        self.global_end_month_combo.grid(row=0, column=6, padx=(0, 10))
+        self.global_end_month_combo = ttk.Combobox(period_group, textvariable=self.global_end_month_var, state="readonly", width=4)
+        self.global_end_month_combo.pack(side=tk.LEFT)
         self.global_end_month_combo["values"] = [f"{month:02d}" for month in range(1, 13)]
         self.global_end_month_combo.bind("<<ComboboxSelected>>", self._on_global_filter_change)
 
-        ttk.Label(self.global_filter_bar, text="Document", style="Body.TLabel").grid(row=0, column=7, padx=(0, 6))
-        self.global_doc_type_combo = ttk.Combobox(self.global_filter_bar, textvariable=self.global_doc_type_var, state="readonly", width=18)
+        doc_group = ttk.Frame(controls, style="App.TFrame")
+        doc_group.pack(side=tk.LEFT, padx=(0, 18))
+        ttk.Label(doc_group, text="Document", style="Body.TLabel").pack(side=tk.LEFT, padx=(0, 8))
+        self.global_doc_type_combo = ttk.Combobox(doc_group, textvariable=self.global_doc_type_var, state="readonly", width=18)
         self.global_doc_type_combo["values"] = ["All", "salary", "bonus", "vacation_allowance", "unused_leave_compensation", "other"]
-        self.global_doc_type_combo.grid(row=0, column=8, padx=(0, 10))
+        self.global_doc_type_combo.pack(side=tk.LEFT)
         self.global_doc_type_combo.bind("<<ComboboxSelected>>", self._on_global_filter_change)
 
-        ttk.Label(self.global_filter_bar, text="Search", style="Body.TLabel").grid(row=0, column=9, padx=(0, 6))
+        # Search lives directly in the bar so it can drop to its own line when
+        # the window is too narrow for one row (see _reflow_filter_bar).
+        self.filter_search_group = ttk.Frame(self.global_filter_bar, style="App.TFrame")
+        search_group = self.filter_search_group
+        ttk.Label(search_group, text="Search", style="Body.TLabel").pack(side=tk.LEFT, padx=(0, 8))
         self.global_search_var = tk.StringVar(value="")
-        self.global_search_entry = ttk.Entry(self.global_filter_bar, textvariable=self.global_search_var, width=20)
-        self.global_search_entry.grid(row=0, column=10, padx=(0, 10))
+        self.global_search_entry = ttk.Entry(search_group, textvariable=self.global_search_var, width=22)
+        self.global_search_entry.pack(side=tk.LEFT)
         self.global_search_entry.bind("<KeyRelease>", self._on_global_search)
-        self.add_search_clause_btn = ttk.Button(self.global_filter_bar, text="+", width=2, command=self._add_search_clause)
-        self.add_search_clause_btn.grid(row=0, column=11, padx=(0, 10))
-        self.search_clause_frame = ttk.Frame(self.global_filter_bar, style="App.TFrame")
-        self.search_clause_frame.grid(row=1, column=10, columnspan=4, sticky=tk.W, pady=(6, 0))
+        self.add_search_clause_btn = ttk.Button(search_group, text="+", width=2, command=self._add_search_clause)
+        self.add_search_clause_btn.pack(side=tk.LEFT, padx=(6, 0))
+        self.filter_search_wrapped = None
 
-        self.global_window_label_var = tk.StringVar(value="")
-        ttk.Label(self.global_filter_bar, textvariable=self.global_window_label_var, style="Body.TLabel").grid(row=0, column=12, sticky=tk.W)
-        self.global_filter_status = tk.StringVar(value="")
-        ttk.Label(self.global_filter_bar, textvariable=self.global_filter_status, style="Body.TLabel").grid(row=0, column=13, sticky=tk.E)
+        # Right-hand side: state and the controls that act on all of it.
+        trailing = ttk.Frame(self.global_filter_bar, style="App.TFrame")
+        trailing.grid(row=0, column=2, sticky=tk.E)
+        self.filter_trailing = trailing
+
         self.lock_canvas = tk.Canvas(
-            self.global_filter_bar,
+            trailing,
             width=22,
             height=22,
             highlightthickness=0,
             bd=0,
             relief=tk.FLAT,
-            bg=self.root.cget("background"),
+            bg=self.theme.bg,
         )
-        self.lock_canvas.grid(row=0, column=14, padx=(8, 0), sticky=tk.E)
+        self.lock_canvas.pack(side=tk.RIGHT, padx=(10, 0))
         self.lock_canvas.bind("<Button-1>", lambda _event: self._toggle_edit_lock())
         self._add_tooltip(self.lock_canvas, "Toggle edit lock.")
+
+        self.reset_filters_btn = ttk.Button(trailing, text="Clear all", command=self._reset_global_filters)
+        self.reset_filters_btn.pack(side=tk.RIGHT)
+        self._add_tooltip(self.reset_filters_btn, "Clear every filter and search term.")
+
+        self.global_filter_status = tk.StringVar(value="")
+        ttk.Label(trailing, textvariable=self.global_filter_status, style="Body.TLabel").pack(side=tk.RIGHT, padx=(0, 12))
+
+        # Then the applied filters, one removable chip each.
+        self.filter_chip_frame = ttk.Frame(self.global_filter_bar, style="App.TFrame")
+        self.filter_chip_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(8, 0))
+        # The active window is shown by the period chip, so the label that used
+        # to repeat it is kept only as the chip's source of text.
+        self.global_window_label_var = tk.StringVar(value="")
+
+        self.search_clause_frame = ttk.Frame(self.global_filter_bar, style="App.TFrame")
+        self.search_clause_frame.grid(row=4, column=0, columnspan=3, sticky=tk.W, pady=(6, 0))
+        self.global_filter_bar.bind("<Configure>", self._reflow_filter_bar)
+        self._reflow_filter_bar()
 
         self._add_tooltip(self.global_start_year_combo, "Start year for the global filter range.")
         self._add_tooltip(self.global_start_month_combo, "Start month for the global filter range.")
@@ -449,6 +712,7 @@ class PayrollProcessorGUI:
 
         self._apply_ui_prefs()
         self._update_lock_indicator()
+        self._render_filter_chips()
 
         separator = ttk.Separator(main_frame, orient=tk.HORIZONTAL)
         separator.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 12))
@@ -495,6 +759,12 @@ class PayrollProcessorGUI:
                 btn.configure(image=self.icons.get(icon_key), compound=tk.LEFT)
             btn.grid(row=idx, column=0, sticky=(tk.W, tk.E), pady=(0, 6))
             self.sidebar_buttons[view_name] = btn
+            # ⌘1..⌘8 jump straight to a view, in sidebar order.
+            self.root.bind_all(
+                f"<Command-Key-{idx + 1}>",
+                lambda _event, name=view_name: self._set_active_view(name),
+            )
+            self._add_tooltip(btn, f"{view_name}  (⌘{idx + 1})")
 
         self.notebook = ttk.Notebook(content_frame, style="Hidden.TNotebook")
         self.notebook.grid(row=0, column=1, sticky=(tk.W, tk.E, tk.N, tk.S))
@@ -521,66 +791,87 @@ class PayrollProcessorGUI:
 
 
         self.processing_tab.columnconfigure(0, weight=1)
-        self.processing_tab.rowconfigure(2, weight=1)
+        self.processing_tab.rowconfigure(3, weight=1)
 
-        # Title + logo
+        # Title + logo, left aligned like every other view's header.
         header = ttk.Frame(self.processing_tab, style="App.TFrame")
-        header.grid(row=0, column=0, pady=(0, 20), sticky=tk.EW)
-        header_inner = ttk.Frame(header, style="App.TFrame")
-        header_inner.pack(anchor=tk.CENTER)
+        header.grid(row=0, column=0, pady=(0, 12), sticky=tk.EW)
         if self.logo_image:
-            ttk.Label(header_inner, image=self.logo_image).pack(side=tk.LEFT, padx=(0, 10))
-        ttk.Label(
-            header_inner,
-            text="Payment Processor",
-            style="Header.TLabel",
-        ).pack(side=tk.LEFT)
-
-        # Instructions
+            ttk.Label(header, image=self.logo_image).pack(side=tk.LEFT, padx=(0, 12))
+        title_block = ttk.Frame(header, style="App.TFrame")
+        title_block.pack(side=tk.LEFT, anchor=tk.W)
+        ttk.Label(title_block, text="Processing", style="Header.TLabel").pack(anchor=tk.W)
         self.instructions_label = ttk.Label(
-            self.processing_tab,
+            title_block,
             text=self.get_instructions_text(),
-            justify=tk.CENTER,
-            wraplength=600,
+            justify=tk.LEFT,
+            wraplength=620,
             style="Body.TLabel",
         )
-        self.instructions_label.grid(row=1, column=0, pady=(0, 20))
+        self.instructions_label.pack(anchor=tk.W, pady=(2, 0))
 
-        # File list frame
+        # Setup banner: only present while something needs attention.
+        self.setup_banner = ttk.Frame(self.processing_tab, style="Empty.TFrame", padding=12)
+        self.setup_banner_body = ttk.Label(
+            self.setup_banner,
+            text="",
+            style="EmptyBody.TLabel",
+            justify=tk.LEFT,
+            wraplength=640,
+        )
+        self.setup_banner_title = ttk.Label(self.setup_banner, text="", style="EmptyTitle.TLabel")
+        self.setup_banner_title.pack(anchor=tk.W)
+        self.setup_banner_body.pack(anchor=tk.W, pady=(4, 0))
+        self.setup_banner_actions = ttk.Frame(self.setup_banner, style="Empty.TFrame")
+        self.setup_banner_actions.pack(anchor=tk.W, pady=(10, 0))
+
+        # File list
         list_frame = ttk.LabelFrame(self.processing_tab, text="Selected Files", padding="8", style="App.TLabelframe")
-        list_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 20))
+        list_frame.grid(row=3, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 12))
         list_frame.columnconfigure(0, weight=1)
         list_frame.rowconfigure(0, weight=1)
 
-        # File listbox with scrollbar
         listbox_frame = ttk.Frame(list_frame)
         listbox_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         listbox_frame.columnconfigure(0, weight=1)
         listbox_frame.rowconfigure(0, weight=1)
 
-        self.file_listbox = tk.Listbox(listbox_frame, selectmode=tk.MULTIPLE)
+        self.file_listbox = tk.Listbox(
+            listbox_frame,
+            selectmode=tk.MULTIPLE,
+            bg=self.theme.surface,
+            fg=self.theme.text_primary,
+            selectbackground=self.theme.selection,
+            selectforeground=self.theme.text_primary,
+            highlightthickness=1,
+            highlightbackground=self.theme.border,
+            highlightcolor=self.theme.accent,
+            borderwidth=0,
+            activestyle="none",
+        )
         self.file_listbox.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
 
-        # Scrollbar for listbox
         scrollbar = ttk.Scrollbar(listbox_frame, orient=tk.VERTICAL, command=self.file_listbox.yview)
         scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
         self.file_listbox.configure(yscrollcommand=scrollbar.set)
 
-        # Drag and drop area (visual indicator)
-        if DRAG_DROP_AVAILABLE:
-            self.drop_label = ttk.Label(
-                listbox_frame,
-                text="Drop ZIP or PDF files here or use Browse button",
-                foreground="gray",
-                anchor=tk.CENTER,
-            )
-            self.drop_label.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+        # Drop-zone hint, shown over an empty list.
+        self.drop_label = ttk.Label(
+            listbox_frame,
+            text=(
+                "Drop ZIP or PDF files here"
+                if DRAG_DROP_AVAILABLE
+                else "Click Browse Files to choose ZIP or PDF payroll files"
+            ),
+            style="Hint.TLabel",
+            anchor=tk.CENTER,
+        )
+        self.drop_label.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
 
-        # Button frame
-        button_frame = ttk.Frame(self.processing_tab)
-        button_frame.grid(row=3, column=0, pady=(0, 20))
+        # Actions: destructive and neutral on the left, the primary action right.
+        button_frame = ttk.Frame(self.processing_tab, style="App.TFrame")
+        button_frame.grid(row=4, column=0, pady=(0, 12), sticky=tk.EW)
 
-        # Browse button
         self.browse_btn = ttk.Button(
             button_frame,
             text="Browse Files",
@@ -588,49 +879,71 @@ class PayrollProcessorGUI:
             image=self.icons.get("browse_files"),
             compound=tk.LEFT,
         )
-        self.browse_btn.pack(side=tk.LEFT, padx=(0, 10))
+        self.browse_btn.pack(side=tk.LEFT, padx=(0, 8))
 
-        # Remove selected button
         self.remove_btn = ttk.Button(button_frame, text="Remove Selected", command=self.remove_selected_files)
-        self.remove_btn.pack(side=tk.LEFT, padx=(0, 10))
+        self.remove_btn.pack(side=tk.LEFT, padx=(0, 8))
 
-        # Clear all button
         self.clear_btn = ttk.Button(button_frame, text="Clear All", command=self.clear_all_files)
-        self.clear_btn.pack(side=tk.LEFT, padx=(0, 20))
+        self.clear_btn.pack(side=tk.LEFT)
 
-        # Generate reports button
         self.generate_btn = ttk.Button(
             button_frame,
             text="Generate Reports",
             command=self.generate_reports,
             style="Accent.TButton",
         )
-        self.generate_btn.pack(side=tk.LEFT)
+        self.generate_btn.pack(side=tk.RIGHT)
+        self.file_count_var = tk.StringVar(value="No files selected")
+        ttk.Label(button_frame, textvariable=self.file_count_var, style="Body.TLabel").pack(side=tk.RIGHT, padx=(0, 12))
 
-        # Progress frame
-        progress_frame = ttk.Frame(self.processing_tab)
-        progress_frame.grid(row=4, column=0, sticky=(tk.W, tk.E))
+        # Progress + live log
+        progress_frame = ttk.Frame(self.processing_tab, style="App.TFrame")
+        progress_frame.grid(row=5, column=0, sticky=(tk.W, tk.E))
         progress_frame.columnconfigure(0, weight=1)
 
-        # Progress bar
         self.progress_var = tk.DoubleVar()
         self.progress_bar = ttk.Progressbar(progress_frame, variable=self.progress_var, maximum=100)
-        self.progress_bar.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
+        self.progress_bar.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 6))
 
-        # Status label
+        status_row = ttk.Frame(progress_frame, style="App.TFrame")
+        status_row.grid(row=1, column=0, sticky=(tk.W, tk.E))
+        status_row.columnconfigure(0, weight=1)
         self.status_var = tk.StringVar()
         self.status_var.set("Ready")
-        self.status_label = ttk.Label(progress_frame, textvariable=self.status_var)
-        self.status_label.grid(row=1, column=0)
+        self.status_label = ttk.Label(status_row, textvariable=self.status_var, style="Body.TLabel")
+        self.status_label.grid(row=0, column=0, sticky=tk.W)
+        self.log_toggle_btn = ttk.Button(status_row, text="Show log", width=10, command=self._toggle_processing_log)
+        self.log_toggle_btn.grid(row=0, column=1, sticky=tk.E)
 
-        # Output location info
-        self.output_location_var = tk.StringVar(value=f"Employee reports folder: {self.employee_reports_dir}")
+        self.log_frame = ttk.Frame(progress_frame, style="App.TFrame")
+        self.log_frame.columnconfigure(0, weight=1)
+        self.log_text = tk.Text(
+            self.log_frame,
+            height=8,
+            wrap=tk.NONE,
+            bg=self.theme.surface,
+            fg=self.theme.text_secondary,
+            insertbackground=self.theme.text_primary,
+            highlightthickness=1,
+            highlightbackground=self.theme.border,
+            borderwidth=0,
+            state=tk.DISABLED,
+            font=(self.theme.font_base, 10),
+        )
+        self.log_text.grid(row=0, column=0, sticky=(tk.W, tk.E))
+        log_scroll = ttk.Scrollbar(self.log_frame, orient=tk.VERTICAL, command=self.log_text.yview)
+        log_scroll.grid(row=0, column=1, sticky=(tk.N, tk.S))
+        self.log_text.configure(yscrollcommand=log_scroll.set)
+        self.log_visible = False
+
+        self.output_location_var = tk.StringVar(value=f"Reports are saved to {self.employee_reports_dir}")
         self.output_location_label = ttk.Label(
             progress_frame,
             textvariable=self.output_location_var,
-            style="Body.TLabel",
+            style="Hint.TLabel",
         )
-        self.output_location_label.grid(row=2, column=0, pady=(4, 0))
+        self.output_location_label.grid(row=3, column=0, sticky=tk.W, pady=(6, 0))
 
         self.create_db_tab()
         self.create_analytics_tab()
@@ -704,198 +1017,350 @@ class PayrollProcessorGUI:
         self.analytics_notebook.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
 
         self.analytics_charts = {}
-        for key, title in (
-            ("monthly", "Monthly Payroll Burn"),
-            ("insurance", "Insurance Breakdown"),
-            ("doc_type", "Salary vs Bonus vs Allowances"),
-            ("heatmap", "Payment Heat-map"),
-            ("employee", "Cost Per Employee"),
-            ("same_month_yoy", "Same Month Across Years"),
-            ("ytd_compare", "YTD vs Prior YTD"),
-            ("rolling_yoy", "Rolling 12-Month YoY"),
-            ("insurance_burden", "Insurance Burden %"),
-            ("paid_aging", "Paid vs Unpaid + Aging"),
-            ("avg_days_paid", "Avg Days to Paid"),
-            ("cost_ratio", "Employer Cost vs Net Pay"),
-            ("headcount", "Headcount Trend"),
-            ("pay_distribution", "Median vs Average Pay"),
-        ):
-            frame = ttk.Frame(self.analytics_notebook, padding=8, style="App.TFrame")
-            fig = Figure(figsize=(8, 5), dpi=100)
-            ax = fig.add_subplot(1, 1, 1)
-            canvas = FigureCanvasTkAgg(fig, master=frame)
-            canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-            toolbar = NavigationToolbar2Tk(canvas, frame)
-            toolbar.update()
-            toolbar.pack(side=tk.BOTTOM, fill=tk.X)
-            self.analytics_notebook.add(frame, text=title)
-            self.analytics_charts[key] = {"fig": fig, "ax": ax, "canvas": canvas, "toolbar": toolbar}
+        self.analytics_chart_groups = {}
+        self.analytics_group_frames = {}
+        self.expanded_chart = None
+        # Fourteen charts used to be fourteen tabs. Grouping them by question -
+        # what we spend, how it moves, insurance, payment status, the workforce -
+        # puts related charts side by side and cuts the tab strip to five.
+        for group_title, chart_specs in self.CHART_GROUPS:
+            group = ttk.Frame(self.analytics_notebook, padding=8, style="App.TFrame")
+            self.analytics_notebook.add(group, text=group_title)
+            self.analytics_group_frames[group_title] = group
+            self.analytics_chart_groups[group_title] = [key for key, _ in chart_specs]
+            columns = 1 if len(chart_specs) == 1 else 2
+            for index in range(columns):
+                group.columnconfigure(index, weight=1, uniform="charts")
+            for index in range((len(chart_specs) + columns - 1) // columns):
+                group.rowconfigure(index, weight=1)
 
+            for index, (key, title) in enumerate(chart_specs):
+                row, column = divmod(index, columns)
+                card = ttk.Frame(group, style="Card.TFrame", padding=6)
+                card.grid(row=row, column=column, sticky=(tk.W, tk.E, tk.N, tk.S), padx=4, pady=4)
+                card.columnconfigure(0, weight=1)
+                card.rowconfigure(1, weight=1)
+
+                card_header = ttk.Frame(card, style="Card.TFrame")
+                card_header.grid(row=0, column=0, sticky=(tk.W, tk.E))
+                card_header.columnconfigure(0, weight=1)
+                ttk.Label(card_header, text=title, style="CardTitle.TLabel").grid(row=0, column=0, sticky=tk.W)
+                expand_btn = ttk.Button(
+                    card_header,
+                    text="⤢",
+                    width=3,
+                    command=lambda chart_key=key: self._toggle_chart_expand(chart_key),
+                )
+                expand_btn.grid(row=0, column=1, sticky=tk.E)
+                self._add_tooltip(expand_btn, "Fill the tab with this chart, with zoom and export tools.")
+
+                body = ttk.Frame(card, style="Card.TFrame")
+                body.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+
+                fig = Figure(figsize=(4.4, 2.8), dpi=100)
+                ax = fig.add_subplot(1, 1, 1)
+                canvas = FigureCanvasTkAgg(fig, master=body)
+                canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+                # The matplotlib toolbar is developer chrome; it appears only
+                # when a chart is expanded.
+                toolbar_holder = ttk.Frame(card, style="Card.TFrame")
+                toolbar = NavigationToolbar2Tk(canvas, toolbar_holder)
+                toolbar.update()
+                toolbar.pack(side=tk.BOTTOM, fill=tk.X)
+
+                self.analytics_charts[key] = {
+                    "fig": fig,
+                    "ax": ax,
+                    "canvas": canvas,
+                    "toolbar": toolbar,
+                    "toolbar_holder": toolbar_holder,
+                    "card": card,
+                    "group": group_title,
+                    "position": (row, column),
+                    "expand_btn": expand_btn,
+                    "stale": True,
+                }
+
+        self.analytics_notebook.bind("<<NotebookTabChanged>>", self._on_analytics_group_change)
         self.analytics_heatmap_cbar = None
         self.analytics_heatmap_cax = None
         self.analytics_legend_map = {}
         self._bind_chart_drilldowns()
 
+    def _visible_chart_group(self):
+        """Title of the analytics group currently on screen, if any."""
+        notebook = getattr(self, "analytics_notebook", None)
+        if notebook is None:
+            return None
+        try:
+            current = notebook.select()
+        except tk.TclError:
+            return None
+        if not current:
+            return None
+        for title, frame in self.analytics_group_frames.items():
+            if str(frame) == current:
+                return title
+        return None
+
+    def _draw_visible_charts(self):
+        """Render the charts in the visible group, skipping fresh ones."""
+        group_title = self._visible_chart_group()
+        if group_title is None:
+            return
+        for key in self.analytics_chart_groups.get(group_title, []):
+            chart = self.analytics_charts[key]
+            if chart.get("stale", True):
+                chart["canvas"].draw()
+                chart["stale"] = False
+
+    def _on_analytics_group_change(self, _event=None):
+        self._draw_visible_charts()
+
+    def _toggle_chart_expand(self, key):
+        """Fill the group tab with one chart, or restore the grid."""
+        chart = self.analytics_charts.get(key)
+        if not chart:
+            return
+        group_title = chart["group"]
+        group = self.analytics_group_frames[group_title]
+        siblings = [self.analytics_charts[k] for k in self.analytics_chart_groups[group_title]]
+
+        if self.expanded_chart == key:
+            for sibling in siblings:
+                row, column = sibling["position"]
+                sibling["card"].grid(row=row, column=column, columnspan=1, rowspan=1,
+                                     sticky=(tk.W, tk.E, tk.N, tk.S), padx=4, pady=4)
+                sibling["toolbar_holder"].grid_forget()
+                sibling["expand_btn"].configure(text="⤢")
+            self.expanded_chart = None
+        else:
+            if self.expanded_chart:
+                self._toggle_chart_expand(self.expanded_chart)
+            for sibling in siblings:
+                sibling["card"].grid_remove()
+            rows = max(1, group.grid_size()[1])
+            columns = max(1, group.grid_size()[0])
+            chart["card"].grid(row=0, column=0, columnspan=columns, rowspan=rows,
+                               sticky=(tk.W, tk.E, tk.N, tk.S), padx=4, pady=4)
+            chart["toolbar_holder"].grid(row=2, column=0, sticky=(tk.W, tk.E))
+            chart["expand_btn"].configure(text="⤡")
+            self.expanded_chart = key
+        chart["canvas"].draw_idle()
+
     def refresh_analytics(self):
-        """Refresh analytics charts from the database."""
+        """Refresh analytics charts from the database, off the UI thread."""
         if not self.db_config.get("enabled"):
             self.analytics_status_var.set("Database storage is disabled.")
-            self.show_message(
-                "Database Disabled",
-                "Enable database storage in Settings to view analytics.",
-                kind="warning",
+            self._database_notice(
+                self.analytics_tab,
+                "Charts are drawn from stored payroll entries. Turn storage on to see them.",
             )
             return
+        self._clear_database_notice(self.analytics_tab)
 
-        self.analytics_status_var.set("Refreshing...")
+        self.analytics_status_var.set("Refreshing…")
         try:
             self._refresh_global_filters()
-            start_date, end_date, document_type, search = self._get_global_filters()
-            end_date_ref = end_date or datetime.date.today()
-            rolling_end = self._month_end(end_date_ref)
-            rolling_start = self._add_months(self._month_start(rolling_end), -23)
-            monthly_rows = db_storage.fetch_monthly_summary(
+            filters = self._get_global_filters()
+            top_n = int(self.analytics_top_n_var.get())
+        except Exception as exc:
+            self.analytics_status_var.set("Refresh failed.")
+            self.show_message("Analytics Error", str(exc), kind="warning")
+            return
+
+        heatmap_year = self.global_range_end_year
+        heatmap_month = self.global_range_end_month
+        employee_code = self.analytics_selected_employee_code
+        employee_name = self.analytics_selected_employee_name
+
+        # A dozen queries and fourteen figures used to run on the Tk thread, so
+        # every filter change froze the window. The queries now run in a worker
+        # and only the drawing happens back on the UI thread.
+        self._run_async(
+            "analytics",
+            lambda: self._fetch_analytics_data(
+                filters, top_n, heatmap_year, heatmap_month, employee_code, employee_name
+            ),
+            self._render_analytics,
+            on_error=self._analytics_failed,
+        )
+
+    def _fetch_analytics_data(self, filters, top_n, heatmap_year, heatmap_month,
+                              employee_code, employee_name):
+        """Every query the analytics view needs. Runs on a worker thread."""
+        start_date, end_date, document_type, search = filters
+        end_date_ref = end_date or datetime.date.today()
+        rolling_end = self._month_end(end_date_ref)
+        rolling_start = self._add_months(self._month_start(rolling_end), -23)
+
+        prior_end_day = min(
+            end_date_ref.day,
+            calendar.monthrange(end_date_ref.year - 1, end_date_ref.month)[1],
+        )
+        prior_end = datetime.date(end_date_ref.year - 1, end_date_ref.month, prior_end_day)
+
+        heatmap_rows = []
+        if heatmap_year is not None and heatmap_month is not None:
+            heatmap_rows = db_storage.fetch_payment_heatmap(
+                self.db_config,
+                year=heatmap_year,
+                month=heatmap_month,
+                limit=top_n,
+                document_type=document_type,
+                search=search or None,
+            )
+
+        return {
+            "end_date_ref": end_date_ref,
+            "rolling_end": rolling_end,
+            "heatmap_year": heatmap_year,
+            "heatmap_month": heatmap_month,
+            "heatmap_rows": heatmap_rows,
+            "kpi_totals": db_storage.fetch_kpi_totals(
+                self.db_config,
+                start_date=start_date,
+                end_date=end_date,
+                document_type=document_type,
+                employee_code=employee_code,
+                employee_name=employee_name,
+                search=search or None,
+            ),
+            "monthly_rows": db_storage.fetch_monthly_summary(
                 self.db_config,
                 start_date=start_date,
                 end_date=end_date,
                 document_type=document_type,
                 search=search or None,
-            )
-            monthly_totals = db_storage.fetch_monthly_totals(
+            ),
+            "monthly_totals": db_storage.fetch_monthly_totals(
                 self.db_config,
                 start_date=rolling_start,
                 end_date=rolling_end,
                 document_type=document_type,
                 search=search or None,
-            )
-            top_n = int(self.analytics_top_n_var.get())
-            employee_rows = db_storage.fetch_employer_costs_by_employee(
+            ),
+            "employee_rows": db_storage.fetch_employer_costs_by_employee(
                 self.db_config,
                 limit=top_n,
                 start_date=start_date,
                 end_date=end_date,
                 document_type=document_type,
                 search=search or None,
-            )
-            doc_type_rows = db_storage.fetch_document_type_breakdown(
+            ),
+            "doc_type_rows": db_storage.fetch_document_type_breakdown(
                 self.db_config,
                 start_date=start_date,
                 end_date=end_date,
                 document_type=document_type,
                 search=search or None,
-            )
-            same_month_rows = db_storage.fetch_month_totals_by_year(
+            ),
+            "same_month_rows": db_storage.fetch_month_totals_by_year(
                 self.db_config,
                 month=end_date_ref.month,
                 document_type=document_type,
                 search=search or None,
-            )
-            current_ytd = db_storage.fetch_dashboard_metrics(
+            ),
+            "current_ytd": db_storage.fetch_dashboard_metrics(
                 self.db_config,
                 start_date=datetime.date(end_date_ref.year, 1, 1),
                 end_date=end_date_ref,
                 document_type=document_type,
                 search=search or None,
-            )
-            prior_end_day = min(
-                end_date_ref.day,
-                calendar.monthrange(end_date_ref.year - 1, end_date_ref.month)[1],
-            )
-            prior_end = datetime.date(end_date_ref.year - 1, end_date_ref.month, prior_end_day)
-            prior_ytd = db_storage.fetch_dashboard_metrics(
+            ),
+            "prior_ytd": db_storage.fetch_dashboard_metrics(
                 self.db_config,
                 start_date=datetime.date(end_date_ref.year - 1, 1, 1),
                 end_date=prior_end,
                 document_type=document_type,
                 search=search or None,
-            )
-            paid_unpaid = db_storage.fetch_paid_unpaid_totals(
+            ),
+            "paid_unpaid": db_storage.fetch_paid_unpaid_totals(
                 self.db_config,
                 start_date=start_date,
                 end_date=end_date,
                 document_type=document_type,
                 search=search or None,
-            )
-            unpaid_buckets = db_storage.fetch_unpaid_aging_buckets(
+            ),
+            "unpaid_buckets": db_storage.fetch_unpaid_aging_buckets(
                 self.db_config,
                 as_of=end_date_ref,
                 start_date=start_date,
                 end_date=end_date,
                 document_type=document_type,
                 search=search or None,
-            )
-            avg_days_rows = db_storage.fetch_avg_days_to_paid_by_month(
+            ),
+            "avg_days_rows": db_storage.fetch_avg_days_to_paid_by_month(
                 self.db_config,
                 start_date=rolling_start,
                 end_date=rolling_end,
                 document_type=document_type,
                 search=search or None,
-            )
-
-            heatmap_rows = []
-            heatmap_year = self.global_range_end_year
-            heatmap_month = self.global_range_end_month
-            if heatmap_year is not None and heatmap_month is not None:
-                heatmap_rows = db_storage.fetch_payment_heatmap(
-                    self.db_config,
-                    year=heatmap_year,
-                    month=heatmap_month,
-                    limit=top_n,
-                    document_type=document_type,
-                    search=search or None,
-                )
-
-            cost_ratio_rows = db_storage.fetch_employer_cost_ratio_by_month(
+            ),
+            "cost_ratio_rows": db_storage.fetch_employer_cost_ratio_by_month(
                 self.db_config,
                 start_date=start_date,
                 end_date=end_date,
                 document_type=document_type,
                 search=search or None,
-            )
-            headcount_rows = db_storage.fetch_headcount_trend(
+            ),
+            "headcount_rows": db_storage.fetch_headcount_trend(
                 self.db_config,
                 start_date=start_date,
                 end_date=end_date,
                 search=search or None,
-            )
-            distribution_rows = db_storage.fetch_net_pay_distribution(
+            ),
+            "distribution_rows": db_storage.fetch_net_pay_distribution(
                 self.db_config,
                 start_date=start_date,
                 end_date=end_date,
                 document_type=document_type,
                 search=search or None,
-            )
+            ),
+        }
 
-            self._refresh_kpis()
+    def _render_analytics(self, data):
+        """Draw the analytics view from fetched data. UI thread only."""
+        total_net, total_employee_ins, total_employer_ins = data["kpi_totals"]
+        self._apply_kpi_totals(total_net, total_employee_ins, total_employer_ins)
 
-            self._plot_monthly_burn(monthly_rows)
-            self._plot_insurance_breakdown(monthly_rows)
-            self._plot_doc_type_breakdown(doc_type_rows)
-            self._plot_payment_heatmap(heatmap_rows, year=heatmap_year, month=heatmap_month)
-            self._plot_employee_costs(employee_rows)
-            self._plot_same_month_yoy(same_month_rows, end_date_ref.month)
-            self._plot_ytd_compare(current_ytd, prior_ytd, end_date_ref.year)
-            self._plot_rolling_yoy(monthly_totals, rolling_end)
-            self._plot_insurance_burden(monthly_totals)
-            self._plot_paid_aging(paid_unpaid, unpaid_buckets)
-            self._plot_avg_days_to_paid(avg_days_rows)
-            self._plot_cost_ratio(cost_ratio_rows)
-            self._plot_headcount_trend(headcount_rows)
-            self._plot_pay_distribution(distribution_rows)
-            for chart in self.analytics_charts.values():
-                chart["canvas"].draw()
-            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            self.analytics_status_var.set(f"Last refreshed at {timestamp}.")
-        except Exception as exc:
-            self.analytics_status_var.set("Refresh failed.")
-            self.show_message("Analytics Error", str(exc), kind="warning")
+        end_date_ref = data["end_date_ref"]
+        self._plot_monthly_burn(data["monthly_rows"])
+        self._plot_insurance_breakdown(data["monthly_rows"])
+        self._plot_doc_type_breakdown(data["doc_type_rows"])
+        self._plot_payment_heatmap(
+            data["heatmap_rows"], year=data["heatmap_year"], month=data["heatmap_month"]
+        )
+        self._plot_employee_costs(data["employee_rows"])
+        self._plot_same_month_yoy(data["same_month_rows"], end_date_ref.month)
+        self._plot_ytd_compare(data["current_ytd"], data["prior_ytd"], end_date_ref.year)
+        self._plot_rolling_yoy(data["monthly_totals"], data["rolling_end"])
+        self._plot_insurance_burden(data["monthly_totals"])
+        self._plot_paid_aging(data["paid_unpaid"], data["unpaid_buckets"])
+        self._plot_avg_days_to_paid(data["avg_days_rows"])
+        self._plot_cost_ratio(data["cost_ratio_rows"])
+        self._plot_headcount_trend(data["headcount_rows"])
+        self._plot_pay_distribution(data["distribution_rows"])
+
+        # Rendering fourteen figures costs more than querying for them, so only
+        # the visible group is drawn now; the rest are marked stale and drawn
+        # when their tab is opened.
+        for chart in self.analytics_charts.values():
+            chart["stale"] = True
+        self._draw_visible_charts()
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.analytics_status_var.set(f"Last refreshed at {timestamp}.")
+
+    def _analytics_failed(self, exc):
+        self.analytics_status_var.set("Refresh failed.")
+        self.show_message("Analytics Error", str(exc), kind="warning")
 
     def _plot_monthly_burn(self, rows):
         self.analytics_monthly_ax = self.analytics_charts["monthly"]["ax"]
         self.analytics_monthly_ax.clear()
         if not rows:
-            self.analytics_monthly_ax.set_title("Monthly Payroll Burn")
-            self.analytics_monthly_ax.text(0.5, 0.5, "No data", ha="center", va="center")
+            self._empty_axes(self.analytics_monthly_ax, "Monthly Payroll Burn")
             self.analytics_monthly_labels = []
             return
 
@@ -911,20 +1376,25 @@ class PayrollProcessorGUI:
         employer_cost = [monthly[label]["net"] + monthly[label]["employer"] for label in labels]
         self.analytics_monthly_labels = labels
 
-        self._monthly_line_net, = self.analytics_monthly_ax.plot(labels, net_vals, marker="o", label="Net Pay")
-        self._monthly_line_employer, = self.analytics_monthly_ax.plot(labels, employer_cost, marker="o", label="Employer Cost")
+        self._monthly_line_net, = self.analytics_monthly_ax.plot(
+            labels, net_vals, marker="o", markersize=4, linewidth=2,
+            color=self._series_color(0), label="Net Pay",
+        )
+        self._monthly_line_employer, = self.analytics_monthly_ax.plot(
+            labels, employer_cost, marker="o", markersize=4, linewidth=2,
+            color=self._series_color(1), label="Employer Cost",
+        )
         self.analytics_monthly_ax.set_title("Monthly Payroll Burn")
         self.analytics_monthly_ax.set_ylabel("Amount")
-        self.analytics_monthly_ax.tick_params(axis="x", rotation=45)
-        legend = self.analytics_monthly_ax.legend()
+        legend = self.analytics_monthly_ax.legend(frameon=True)
         self._bind_legend_toggle(legend, [self._monthly_line_net, self._monthly_line_employer])
+        self._style_axes(self.analytics_monthly_ax, currency=True, rotate=45)
 
     def _plot_doc_type_breakdown(self, rows):
         self.analytics_doc_type_ax = self.analytics_charts["doc_type"]["ax"]
         self.analytics_doc_type_ax.clear()
         if not rows:
-            self.analytics_doc_type_ax.set_title("Salary vs Bonus vs Allowances")
-            self.analytics_doc_type_ax.text(0.5, 0.5, "No data", ha="center", va="center")
+            self._empty_axes(self.analytics_doc_type_ax, "Salary vs Bonus vs Allowances")
             self.analytics_doc_type_labels = []
             return
 
@@ -941,24 +1411,24 @@ class PayrollProcessorGUI:
         other_vals = [monthly[label]["Other"] for label in labels]
         self.analytics_doc_type_labels = labels
 
-        self.analytics_doc_type_ax.bar(labels, salary_vals, label="Salary")
-        self.analytics_doc_type_ax.bar(labels, bonus_vals, bottom=salary_vals, label="Bonus")
+        self.analytics_doc_type_ax.bar(labels, salary_vals, label="Salary", color=self._series_color(0))
+        self.analytics_doc_type_ax.bar(labels, bonus_vals, bottom=salary_vals, label="Bonus", color=self._series_color(1))
         stacked_base = [salary_vals[i] + bonus_vals[i] for i in range(len(labels))]
-        self.analytics_doc_type_ax.bar(labels, allowance_vals, bottom=stacked_base, label="Allowance")
+        self.analytics_doc_type_ax.bar(labels, allowance_vals, bottom=stacked_base, label="Allowance", color=self._series_color(2))
         if any(other_vals):
             stacked_base = [stacked_base[i] + allowance_vals[i] for i in range(len(labels))]
-            self.analytics_doc_type_ax.bar(labels, other_vals, bottom=stacked_base, label="Other")
+            self.analytics_doc_type_ax.bar(labels, other_vals, bottom=stacked_base, label="Other", color=self._series_color(7))
 
         self.analytics_doc_type_ax.set_title("Salary vs Bonus vs Allowances")
-        self.analytics_doc_type_ax.tick_params(axis="x", rotation=45)
-        self.analytics_doc_type_ax.legend()
+        self.analytics_doc_type_ax.set_ylabel("Net Pay")
+        self.analytics_doc_type_ax.legend(frameon=True)
+        self._style_axes(self.analytics_doc_type_ax, currency=True, rotate=45)
 
     def _plot_insurance_breakdown(self, rows):
         self.analytics_insurance_ax = self.analytics_charts["insurance"]["ax"]
         self.analytics_insurance_ax.clear()
         if not rows:
-            self.analytics_insurance_ax.set_title("Insurance Breakdown")
-            self.analytics_insurance_ax.text(0.5, 0.5, "No data", ha="center", va="center")
+            self._empty_axes(self.analytics_insurance_ax, "Insurance Breakdown")
             self.analytics_insurance_labels = []
             return
 
@@ -974,22 +1444,22 @@ class PayrollProcessorGUI:
         employer_vals = [monthly[label]["employer"] for label in labels]
         self.analytics_insurance_labels = labels
 
-        self.analytics_insurance_ax.bar(labels, employer_vals, label="Employer Insurance")
-        self.analytics_insurance_ax.bar(labels, employee_vals, bottom=employer_vals, label="Employee Insurance")
+        self.analytics_insurance_ax.bar(labels, employer_vals, label="Employer Insurance", color=self._series_color(0))
+        self.analytics_insurance_ax.bar(labels, employee_vals, bottom=employer_vals, label="Employee Insurance", color=self._series_color(5))
         self.analytics_insurance_ax.set_title("Insurance Contribution Breakdown")
-        self.analytics_insurance_ax.tick_params(axis="x", rotation=45)
-        self.analytics_insurance_ax.legend()
+        self.analytics_insurance_ax.set_ylabel("Contributions")
+        self.analytics_insurance_ax.legend(frameon=True)
+        self._style_axes(self.analytics_insurance_ax, currency=True, rotate=45)
 
     def _plot_same_month_yoy(self, rows, target_month):
         ax = self.analytics_charts["same_month_yoy"]["ax"]
         ax.clear()
         if not rows:
-            ax.set_title("Same Month Across Years")
-            ax.text(0.5, 0.5, "No data", ha="center", va="center")
+            self._empty_axes(ax, "Same Month Across Years")
             return
         labels = [str(int(year)) for year, *_ in rows]
         values = [float(net or 0) + float(employer_ins or 0) for year, net, employer_ins, _ in rows]
-        ax.bar(labels, values, color="#5A8DEE")
+        ax.bar(labels, values, color=self._series_color(0), width=0.6)
         ax.set_title(f"Same Month Across Years (Month {target_month:02d})")
         ax.set_ylabel("Employer Cost")
         if len(values) >= 2:
@@ -997,26 +1467,32 @@ class PayrollProcessorGUI:
             prev = values[-2]
             if prev:
                 pct = ((last - prev) / prev) * 100
-                ax.text(0.98, 0.95, f"YoY: {pct:+.1f}%", transform=ax.transAxes, ha="right", va="top")
+                self._annotate_change(ax, f"YoY {pct:+.1f}%", pct)
+        self._style_axes(ax, currency=True)
 
     def _plot_ytd_compare(self, current_metrics, prior_metrics, year):
         ax = self.analytics_charts["ytd_compare"]["ax"]
         ax.clear()
         current_total = float(current_metrics.get("total_net_pay", 0)) + float(current_metrics.get("employer_insurance", 0))
         prior_total = float(prior_metrics.get("total_net_pay", 0)) + float(prior_metrics.get("employer_insurance", 0))
-        ax.bar([str(year - 1), str(year)], [prior_total, current_total], color=["#B0BEC5", "#43A047"])
+        ax.bar(
+            [str(year - 1), str(year)],
+            [prior_total, current_total],
+            color=[self.theme.muted, self._series_color(0)],
+            width=0.5,
+        )
         ax.set_title("YTD vs Prior YTD (Employer Cost)")
         ax.set_ylabel("Amount")
         if prior_total:
             pct = ((current_total - prior_total) / prior_total) * 100
-            ax.text(0.98, 0.95, f"{pct:+.1f}%", transform=ax.transAxes, ha="right", va="top")
+            self._annotate_change(ax, f"{pct:+.1f}%", pct)
+        self._style_axes(ax, currency=True)
 
     def _plot_rolling_yoy(self, rows, end_date):
         ax = self.analytics_charts["rolling_yoy"]["ax"]
         ax.clear()
         if not rows:
-            ax.set_title("Rolling 12-Month YoY")
-            ax.text(0.5, 0.5, "No data", ha="center", va="center")
+            self._empty_axes(ax, "Rolling 12-Month YoY")
             return
         monthly = {(int(year), int(month)): float(net or 0) + float(employer_ins or 0) for year, month, net, employer_ins, _ in rows}
         start = self._add_months(self._month_start(end_date), -23)
@@ -1029,18 +1505,20 @@ class PayrollProcessorGUI:
         prior_vals = values[:12]
         current_vals = values[12:]
         labels = [f"{y:04d}-{m:02d}" for (y, m) in months[12:]]
-        ax.plot(labels, current_vals, marker="o", label="Current 12 mo")
-        ax.plot(labels, prior_vals, marker="o", label="Prior 12 mo")
+        ax.plot(labels, current_vals, marker="o", markersize=4, linewidth=2,
+                color=self._series_color(0), label="Current 12 mo")
+        ax.plot(labels, prior_vals, marker="o", markersize=3, linewidth=1.5, linestyle="--",
+                color=self.theme.muted, label="Prior 12 mo")
         ax.set_title("Rolling 12-Month YoY (Employer Cost)")
-        ax.tick_params(axis="x", rotation=45)
-        ax.legend()
+        ax.set_ylabel("Employer Cost")
+        ax.legend(frameon=True)
+        self._style_axes(ax, currency=True, rotate=45)
 
     def _plot_insurance_burden(self, rows):
         ax = self.analytics_charts["insurance_burden"]["ax"]
         ax.clear()
         if not rows:
-            ax.set_title("Insurance Burden %")
-            ax.text(0.5, 0.5, "No data", ha="center", va="center")
+            self._empty_axes(ax, "Insurance Burden %")
             return
         labels = []
         burdens = []
@@ -1053,10 +1531,10 @@ class PayrollProcessorGUI:
                 burden = (total_ins / total_cost) * 100
             labels.append(f"{int(year):04d}-{int(month):02d}")
             burdens.append(burden)
-        ax.plot(labels, burdens, marker="o", color="#8E24AA")
+        ax.plot(labels, burdens, marker="o", markersize=4, linewidth=2, color=self._series_color(4))
         ax.set_title("Insurance Burden % (Insurance / Total Cost)")
-        ax.set_ylabel("%")
-        ax.tick_params(axis="x", rotation=45)
+        ax.set_ylabel("Share of total cost")
+        self._style_axes(ax, percent=True, rotate=45)
 
     def _plot_paid_aging(self, totals, buckets):
         ax = self.analytics_charts["paid_aging"]["ax"]
@@ -1071,50 +1549,62 @@ class PayrollProcessorGUI:
             float(buckets.get("61_90", 0)),
             float(buckets.get("90_plus", 0)),
         ]
-        ax.bar(labels, values, color=["#43A047", "#E53935", "#FB8C00", "#FDD835", "#8E24AA", "#546E7A"])
+        tokens = self.theme
+        # Paid and unpaid carry semantic colour; the aging buckets darken as
+        # they age, so the eye lands on the oldest debt first.
+        ax.bar(
+            labels,
+            values,
+            color=[
+                tokens.positive,
+                tokens.negative,
+                self._series_color(1),
+                self._series_color(6),
+                self._series_color(4),
+                tokens.muted,
+            ],
+            width=0.6,
+        )
         ax.set_title("Paid vs Unpaid Totals + Aging Buckets")
         ax.set_ylabel("Net Pay")
-        ax.tick_params(axis="x", rotation=20)
+        self._style_axes(ax, currency=True, rotate=20)
 
     def _plot_avg_days_to_paid(self, rows):
         ax = self.analytics_charts["avg_days_paid"]["ax"]
         ax.clear()
         if not rows:
-            ax.set_title("Average Days to Paid")
-            ax.text(0.5, 0.5, "No data", ha="center", va="center")
+            self._empty_axes(ax, "Average Days to Paid")
             return
         labels = [f"{int(year):04d}-{int(month):02d}" for year, month, _ in rows]
         values = [float(avg_days or 0) for _, _, avg_days in rows]
-        ax.plot(labels, values, marker="o", color="#1565C0")
+        ax.plot(labels, values, marker="o", markersize=4, linewidth=2, color=self._series_color(0))
         ax.set_title("Average Days to Paid")
         ax.set_ylabel("Days")
-        ax.tick_params(axis="x", rotation=45)
+        self._style_axes(ax, suffix="d", rotate=45)
 
     def _plot_cost_ratio(self, rows):
         ax = self.analytics_charts["cost_ratio"]["ax"]
         ax.clear()
         if not rows:
-            ax.set_title("Employer Cost vs Net Pay")
-            ax.text(0.5, 0.5, "No data", ha="center", va="center")
+            self._empty_axes(ax, "Employer Cost vs Net Pay")
             return
         labels = []
         ratios = []
         for year, month, _net_pay, _employer_cost, ratio in rows:
             labels.append(f"{int(year):04d}-{int(month):02d}")
             ratios.append(float(ratio or 0))
-        ax.plot(labels, ratios, marker="o", color="#00897B")
+        ax.plot(labels, ratios, marker="o", markersize=4, linewidth=2, color=self._series_color(5))
         # 1.0 means the employer pays exactly the take-home amount and nothing more.
-        ax.axhline(1.0, color="#B0BEC5", linestyle="--", linewidth=1)
+        ax.axhline(1.0, color=self.theme.muted, linestyle="--", linewidth=1)
         ax.set_title("Employer Cost per € of Net Pay")
         ax.set_ylabel("Cost ratio")
-        ax.tick_params(axis="x", rotation=45)
+        self._style_axes(ax, rotate=45)
 
     def _plot_headcount_trend(self, rows):
         ax = self.analytics_charts["headcount"]["ax"]
         ax.clear()
         if not rows:
-            ax.set_title("Headcount Trend")
-            ax.text(0.5, 0.5, "No data", ha="center", va="center")
+            self._empty_axes(ax, "Headcount Trend")
             return
         labels = []
         headcounts = []
@@ -1125,21 +1615,22 @@ class PayrollProcessorGUI:
             headcounts.append(int(headcount or 0))
             joiners.append(int(joined or 0))
             leavers.append(-int(left or 0))
-        ax.bar(labels, joiners, color="#43A047", label="Joined")
-        ax.bar(labels, leavers, color="#E53935", label="Left")
-        ax.plot(labels, headcounts, marker="o", color="#1565C0", label="Headcount")
-        ax.axhline(0, color="#B0BEC5", linewidth=1)
+        tokens = self.theme
+        ax.bar(labels, joiners, color=tokens.positive, label="Joined", width=0.6)
+        ax.bar(labels, leavers, color=tokens.negative, label="Left", width=0.6)
+        ax.plot(labels, headcounts, marker="o", markersize=4, linewidth=2,
+                color=self._series_color(0), label="Headcount")
+        ax.axhline(0, color=tokens.border, linewidth=1)
         ax.set_title("Headcount Trend with Joiners and Leavers")
         ax.set_ylabel("Employees")
-        ax.tick_params(axis="x", rotation=45)
-        ax.legend(loc="best", fontsize=8)
+        ax.legend(loc="best", frameon=True)
+        self._style_axes(ax, rotate=45)
 
     def _plot_pay_distribution(self, rows):
         ax = self.analytics_charts["pay_distribution"]["ax"]
         ax.clear()
         if not rows:
-            ax.set_title("Median vs Average Pay")
-            ax.text(0.5, 0.5, "No data", ha="center", va="center")
+            self._empty_axes(ax, "Median vs Average Pay")
             return
         labels = []
         averages = []
@@ -1153,13 +1644,15 @@ class PayrollProcessorGUI:
             p25s.append(float(p25 or 0))
             p75s.append(float(p75 or 0))
         # The shaded band is the interquartile range: where the middle half sits.
-        ax.fill_between(labels, p25s, p75s, color="#90CAF9", alpha=0.35, label="25th–75th pct")
-        ax.plot(labels, averages, marker="o", color="#E53935", label="Average")
-        ax.plot(labels, medians, marker="s", color="#1565C0", label="Median")
+        ax.fill_between(labels, p25s, p75s, color=self._series_color(0), alpha=0.18, label="25th–75th pct")
+        ax.plot(labels, averages, marker="o", markersize=4, linewidth=2,
+                color=self._series_color(1), label="Average")
+        ax.plot(labels, medians, marker="s", markersize=4, linewidth=2,
+                color=self._series_color(0), label="Median")
         ax.set_title("Median vs Average Monthly Net Pay")
         ax.set_ylabel("Net Pay")
-        ax.tick_params(axis="x", rotation=45)
-        ax.legend(loc="best", fontsize=8)
+        ax.legend(loc="best", frameon=True)
+        self._style_axes(ax, currency=True, rotate=45)
 
     def _plot_payment_heatmap(self, rows, year=None, month=None):
         self.analytics_heatmap_ax = self.analytics_charts["heatmap"]["ax"]
@@ -1172,14 +1665,16 @@ class PayrollProcessorGUI:
             self.analytics_heatmap_cbar = None
             self.analytics_heatmap_cax = None
         if year is None or month is None:
-            self.analytics_heatmap_ax.set_title("Payment Heat-map")
-            self.analytics_heatmap_ax.text(0.5, 0.5, "Select year and month", ha="center", va="center")
+            self._empty_axes(
+                self.analytics_heatmap_ax,
+                "Payment Heat-map",
+                "Pick a year and month in the filter bar",
+            )
             self.analytics_heatmap_employees = []
             self.analytics_heatmap_dates = []
             return
         if not rows:
-            self.analytics_heatmap_ax.set_title("Payment Heat-map")
-            self.analytics_heatmap_ax.text(0.5, 0.5, "No data", ha="center", va="center")
+            self._empty_axes(self.analytics_heatmap_ax, "Payment Heat-map")
             self.analytics_heatmap_employees = []
             self.analytics_heatmap_dates = []
             return
@@ -1197,15 +1692,25 @@ class PayrollProcessorGUI:
             j = date_index[payment_date]
             data_matrix[i][j] = float(total_net or 0)
 
+        tokens = self.theme
         heatmap_fig = self.analytics_charts["heatmap"]["fig"]
-        im = self.analytics_heatmap_ax.imshow(data_matrix, aspect="auto", cmap="YlGnBu")
+        im = self.analytics_heatmap_ax.imshow(data_matrix, aspect="auto", cmap=tokens.chart_colormap)
         self.analytics_heatmap_ax.set_title("Payment Heat-map")
         self.analytics_heatmap_ax.set_yticks(range(len(employees)))
-        self.analytics_heatmap_ax.set_yticklabels(employees)
+        self.analytics_heatmap_ax.set_yticklabels(
+            [name if len(str(name)) <= 22 else f"{str(name)[:21]}…" for name in employees]
+        )
         self.analytics_heatmap_ax.set_xticks(range(len(date_labels)))
         self.analytics_heatmap_ax.set_xticklabels(date_labels, rotation=90)
         self.analytics_heatmap_cax = heatmap_fig.add_axes([0.88, 0.15, 0.03, 0.7])
         self.analytics_heatmap_cbar = heatmap_fig.colorbar(im, cax=self.analytics_heatmap_cax)
+        self.analytics_heatmap_cbar.outline.set_edgecolor(tokens.border)
+        self.analytics_heatmap_cax.tick_params(colors=tokens.text_secondary, labelsize=8)
+        # The colourbar lives in manually placed axes, so a reflow would move it
+        # out from under the heat-map; the margins are set explicitly instead,
+        # leaving room for the employee names on the left.
+        heatmap_fig.subplots_adjust(left=0.26, right=0.85, bottom=0.16, top=0.90)
+        self._style_axes(self.analytics_heatmap_ax, grid_axis=None, tight=False)
 
     def _month_start(self, date_value):
         return datetime.date(date_value.year, date_value.month, 1)
@@ -1224,14 +1729,13 @@ class PayrollProcessorGUI:
         self.analytics_employee_ax = self.analytics_charts["employee"]["ax"]
         self.analytics_employee_ax.clear()
         if not rows:
-            self.analytics_employee_ax.set_title("Cost Per Employee")
-            self.analytics_employee_ax.text(0.5, 0.5, "No data", ha="center", va="center")
+            self._empty_axes(self.analytics_employee_ax, "Cost Per Employee")
             self.analytics_employee_bar_map = {}
             return
 
         employees = [row[0] for row in rows]
         costs = [float(row[1] or 0) for row in rows]
-        bars = self.analytics_employee_ax.barh(employees, costs)
+        bars = self.analytics_employee_ax.barh(employees, costs, color=self._series_color(0), height=0.65)
         self.analytics_employee_bar_map = {}
         for bar, name in zip(bars, employees):
             bar.set_picker(True)
@@ -1239,6 +1743,8 @@ class PayrollProcessorGUI:
         self.analytics_employee_ax.set_title("Cost Per Employee")
         self.analytics_employee_ax.set_xlabel("Employer Cost")
         self.analytics_employee_ax.invert_yaxis()
+        self.analytics_employee_ax.xaxis.set_major_formatter(FuncFormatter(self._format_axis_amount))
+        self._style_axes(self.analytics_employee_ax, grid_axis="x")
 
     def create_analytics_grid_tab(self):
         """Create the analytics data grid and detail views."""
@@ -1433,8 +1939,12 @@ class PayrollProcessorGUI:
     def refresh_insurance_summary(self):
         if not self.db_config.get("enabled"):
             self.insurance_status_var.set("Database storage is disabled.")
-            self.show_message("Database Disabled", "Enable database storage to view insurance summary.", kind="warning")
+            self._database_notice(
+                self.insurance_tab,
+                "The EFKA/TEKA comparison reads stored claims. Turn storage on to see it.",
+            )
             return
+        self._clear_database_notice(self.insurance_tab)
         if not self.insurance_tree:
             return
         start_date, end_date, document_type, search = self._get_global_filters()
@@ -1781,11 +2291,12 @@ class PayrollProcessorGUI:
 
     def _edit_employee_profile(self):
         if not self.db_config.get("enabled"):
-            self.show_message("Database Disabled", "Enable database storage to edit employee profiles.", kind="warning")
+            self.show_toast("Database storage is off — employee profiles cannot be edited.", kind="warning",
+                            action_text="Open Database Settings…", action=self.open_db_settings)
             return
         code = self.employee_selected_code
         if not code:
-            self.show_message("Employees", "Select an employee first.", kind="info")
+            self.show_toast("Select an employee first.")
             return
         profile = db_storage.fetch_employee_profile(self.db_config, code)
         if not profile:
@@ -1925,7 +2436,8 @@ class PayrollProcessorGUI:
 
     def _edit_insurance_scanned_values(self):
         if not self.db_config.get("enabled"):
-            self.show_message("Database Disabled", "Enable database storage to edit insurance claims.", kind="warning")
+            self.show_toast("Database storage is off — insurance claims cannot be edited.", kind="warning",
+                            action_text="Open Database Settings…", action=self.open_db_settings)
             return
         period = self._get_selected_insurance_period()
         if not period:
@@ -2041,7 +2553,8 @@ class PayrollProcessorGUI:
 
     def _delete_insurance_entry(self):
         if not self.db_config.get("enabled"):
-            self.show_message("Database Disabled", "Enable database storage to delete insurance claims.", kind="warning")
+            self.show_toast("Database storage is off — insurance claims cannot be deleted.", kind="warning",
+                            action_text="Open Database Settings…", action=self.open_db_settings)
             return
         period = self._get_selected_insurance_period()
         if not period:
@@ -2069,7 +2582,7 @@ class PayrollProcessorGUI:
         year, _month = period
         folder = self.archive_dir / str(year) / "Insurance"
         if not folder.exists():
-            self.show_message("Insurance", f"No folder found at:\n{folder}", kind="info")
+            self.show_toast(f"No folder found at {folder}", kind="warning")
             return
         subprocess.run(["open", str(folder)], check=False)
 
@@ -2081,12 +2594,12 @@ class PayrollProcessorGUI:
         row_map = self.insurance_cache.get((year, month), {})
         folder = self.archive_dir / str(year) / "Insurance"
         if not folder.exists():
-            self.show_message("Insurance", f"No folder found at:\n{folder}", kind="info")
+            self.show_toast(f"No folder found at {folder}", kind="warning")
             return
         tpte_codes = row_map.get("tpte_codes") or ""
         codes = [code.strip() for code in tpte_codes.split(",") if code.strip()]
         if not codes:
-            self.show_message("Insurance", "No T.P.T.E. code found for this entry.", kind="info")
+            self.show_toast("No T.P.T.E. code found for this entry.")
             subprocess.run(["open", str(folder)], check=False)
             return
         matches = []
@@ -2099,7 +2612,7 @@ class PayrollProcessorGUI:
         except OSError:
             matches = []
         if not matches:
-            self.show_message("Insurance", "No matching PDF found in the folder.", kind="info")
+            self.show_toast("No matching PDF found in the folder.")
             subprocess.run(["open", str(folder)], check=False)
             return
         matches.sort()
@@ -2119,7 +2632,7 @@ class PayrollProcessorGUI:
             return None
         selection = self.insurance_tree.selection()
         if not selection:
-            self.show_message("Insurance", "Select a month row first.", kind="info")
+            self.show_toast("Select a month row first.")
             return None
         values = self.insurance_tree.item(selection[0], "values")
         if not values or len(values) < 2:
@@ -2134,7 +2647,8 @@ class PayrollProcessorGUI:
 
     def _mark_insurance_paid(self):
         if not self.db_config.get("enabled"):
-            self.show_message("Database Disabled", "Enable database storage to edit insurance claims.", kind="warning")
+            self.show_toast("Database storage is off — insurance claims cannot be edited.", kind="warning",
+                            action_text="Open Database Settings…", action=self.open_db_settings)
             return
         period = self._get_selected_insurance_period()
         if not period:
@@ -2150,7 +2664,8 @@ class PayrollProcessorGUI:
 
     def _mark_insurance_unpaid(self):
         if not self.db_config.get("enabled"):
-            self.show_message("Database Disabled", "Enable database storage to edit insurance claims.", kind="warning")
+            self.show_toast("Database storage is off — insurance claims cannot be edited.", kind="warning",
+                            action_text="Open Database Settings…", action=self.open_db_settings)
             return
         period = self._get_selected_insurance_period()
         if not period:
@@ -2166,7 +2681,8 @@ class PayrollProcessorGUI:
 
     def _set_insurance_paid_date(self):
         if not self.db_config.get("enabled"):
-            self.show_message("Database Disabled", "Enable database storage to edit insurance claims.", kind="warning")
+            self.show_toast("Database storage is off — insurance claims cannot be edited.", kind="warning",
+                            action_text="Open Database Settings…", action=self.open_db_settings)
             return
         period = self._get_selected_insurance_period()
         if not period:
@@ -2203,26 +2719,59 @@ class PayrollProcessorGUI:
             employee_name=self.analytics_selected_employee_name,
             search=search or None,
         )
-        total_net, total_employee_ins, total_employer_ins = totals
+        self._apply_kpi_totals(*totals)
+
+    def _apply_kpi_totals(self, total_net, total_employee_ins, total_employer_ins):
         total_insurance = total_employee_ins + total_employer_ins
         total_employer_cost = total_net + total_employer_ins
         self.kpi_total_net_var.set(self._format_currency(total_net))
         self.kpi_employer_cost_var.set(self._format_currency(total_employer_cost))
         self.kpi_total_insurance_var.set(self._format_currency(total_insurance))
 
-    def _build_kpi_card(self, parent, column, title, value_var, row=0):
+    def _build_kpi_card(self, parent, column, title, value_var, row=0, delta_var=None):
+        """A KPI tile: caption, large value, optional coloured delta line."""
         card = ttk.Frame(parent, style="Card.TFrame", padding=12)
         card.grid(row=row, column=column, sticky=(tk.W, tk.E), padx=6, pady=(0, 6) if row else 0)
         title_label = ttk.Label(card, text=title, style="CardTitle.TLabel")
         title_label.pack(anchor=tk.W)
         value_label = ttk.Label(card, textvariable=value_var, style="CardValue.TLabel")
         value_label.pack(anchor=tk.W, pady=(6, 0))
-        for widget in (card, title_label, value_label):
+        widgets = [card, title_label, value_label]
+        delta_label = None
+        if delta_var is not None:
+            delta_label = ttk.Label(card, textvariable=delta_var, style="CardDelta.TLabel")
+            delta_label.pack(anchor=tk.W, pady=(2, 0))
+            widgets.append(delta_label)
+        for widget in widgets:
             widget.configure(cursor="hand2")
             widget.bind(
                 "<Button-1>",
                 lambda _event, var=value_var, label=title: self._copy_value_to_clipboard(var.get(), label=label),
             )
+        return {"card": card, "value": value_label, "delta": delta_label}
+
+    def _apply_mom_card(self, key, change, as_currency=True):
+        """Fill a month-over-month card from a comparison dict."""
+        value_text, delta_text, direction = self._comparison_parts(change, as_currency=as_currency)
+        value_var, delta_var = {
+            "net": (self.dashboard_mom_net_var, self.dashboard_mom_net_delta),
+            "employer_cost": (self.dashboard_mom_employer_cost_var, self.dashboard_mom_employer_cost_delta),
+            "insurance": (self.dashboard_mom_insurance_var, self.dashboard_mom_insurance_delta),
+            "count": (self.dashboard_mom_count_var, self.dashboard_mom_count_delta),
+        }[key]
+        value_var.set(value_text)
+        delta_var.set(delta_text)
+        self._set_kpi_delta(self.dashboard_mom_cards.get(key), direction)
+
+    def _set_kpi_delta(self, card, direction):
+        """Colour a KPI's delta line by direction: 1 up, -1 down, 0 flat."""
+        label = card.get("delta") if card else None
+        if label is None:
+            return
+        label.configure(style={
+            1: "CardDeltaUp.TLabel",
+            -1: "CardDeltaDown.TLabel",
+        }.get(direction, "CardDelta.TLabel"))
 
     def _copy_value_to_clipboard(self, value, label=None):
         if value is None:
@@ -2269,6 +2818,51 @@ class PayrollProcessorGUI:
         else:
             pct_text = f"{'+' if pct >= 0 else '−'}{abs(pct):.1f}%"
         return f"{current_text}  ({delta_text}, {pct_text})"
+
+    def _comparison_parts(self, change, as_currency=True):
+        """Split a period-over-period change into (value, delta, direction).
+
+        The KPI cards render the value large and the delta underneath in the
+        colour of its direction: 1 for up, -1 for down, 0 for flat or unknown.
+        """
+        if not change:
+            return "—", "", 0
+        current = change.get("current") or 0
+        delta = change.get("delta") or 0
+        pct = change.get("pct_change")
+        if as_currency:
+            value_text = self._format_currency(current)
+            delta_text = f"{'+' if delta >= 0 else '−'}{self._format_currency(abs(delta))}"
+        else:
+            value_text = f"{int(current)}"
+            delta_text = f"{'+' if delta >= 0 else '−'}{abs(int(delta))}"
+        if pct is None:
+            delta_text = f"{delta_text} vs last month"
+        else:
+            delta_text = f"{delta_text}  ({'+' if pct >= 0 else '−'}{abs(pct):.1f}%)"
+        if delta > 0:
+            direction = 1
+        elif delta < 0:
+            direction = -1
+        else:
+            direction = 0
+        return value_text, delta_text, direction
+
+    def _annotate_change(self, ax, text, pct):
+        """Corner annotation coloured by the direction of the change."""
+        tokens = self.theme
+        colour = tokens.positive if pct >= 0 else tokens.negative
+        ax.text(
+            0.98,
+            0.95,
+            text,
+            transform=ax.transAxes,
+            ha="right",
+            va="top",
+            color=colour,
+            fontsize=10,
+            fontweight="bold",
+        )
 
     def _bind_legend_toggle(self, legend, lines):
         if legend is None:
@@ -2385,8 +2979,7 @@ class PayrollProcessorGUI:
         chart = self.dashboard_chart["ax"]
         chart.clear()
         if not rows:
-            chart.set_title("Summary Trend")
-            chart.text(0.5, 0.5, "No data", ha="center", va="center")
+            self._empty_axes(chart, "Summary Trend", "Process a payroll ZIP to see the trend")
             self.dashboard_summary_labels = []
             self.dashboard_chart["canvas"].draw()
             return
@@ -2400,12 +2993,14 @@ class PayrollProcessorGUI:
         net_vals = [monthly[label]["net"] for label in labels]
         employer_cost = [monthly[label]["net"] + monthly[label]["employer"] for label in labels]
         self.dashboard_summary_labels = labels
-        chart.plot(labels, net_vals, marker="o", label="Net Pay")
-        chart.plot(labels, employer_cost, marker="o", label="Employer Cost")
+        chart.plot(labels, net_vals, marker="o", markersize=4, linewidth=2,
+                   color=self._series_color(0), label="Net Pay")
+        chart.plot(labels, employer_cost, marker="o", markersize=4, linewidth=2,
+                   color=self._series_color(1), label="Employer Cost")
         chart.set_title("Summary Trend")
         chart.set_ylabel("Amount")
-        chart.tick_params(axis="x", rotation=45)
-        chart.legend()
+        chart.legend(frameon=True)
+        self._style_axes(chart, currency=True, rotate=45)
         self.dashboard_chart["canvas"].draw()
 
     def _on_dashboard_chart_click(self, event):
@@ -2492,7 +3087,7 @@ class PayrollProcessorGUI:
 
     def _navigate_back(self):
         if not self.nav_history:
-            self.show_message("Back", "No previous state.", kind="info")
+            self.show_toast("Nothing to go back to.")
             return
         state = self.nav_history.pop()
         self._restore_nav_state(state)
@@ -2630,8 +3225,12 @@ class PayrollProcessorGUI:
 
     def refresh_data_grid(self):
         if not self.db_config.get("enabled"):
-            self.show_message("Database Disabled", "Enable database storage in Settings to view analytics.", kind="warning")
+            self._database_notice(
+                self.analytics_grid_view_tab,
+                "The data grid lists stored payroll entries. Turn storage on to see them.",
+            )
             return
+        self._clear_database_notice(self.analytics_grid_view_tab)
 
         self.analytics_selected_employee_code = None
         self.analytics_selected_employee_name = None
@@ -2849,7 +3448,7 @@ class PayrollProcessorGUI:
         if col_name != "paid_status":
             return
         if not self._can_edit():
-            self.show_message("Read-only", "Editing is disabled in viewer mode.", kind="info")
+            self.show_toast("Editing is disabled in viewer mode.", kind="warning")
             return
         row_id = self.analytics_grid_tree.identify_row(event.y)
         if not row_id:
@@ -2884,7 +3483,7 @@ class PayrollProcessorGUI:
     def _open_grid_selected_details(self):
         selection = self.analytics_grid_tree.selection()
         if not selection:
-            self.show_message("Details", "Select a row to view details.", kind="info")
+            self.show_toast("Select a row to view its details.")
             return
         row_id = selection[0]
         columns = list(self.analytics_grid_tree["columns"])
@@ -2897,7 +3496,7 @@ class PayrollProcessorGUI:
         if not hasattr(self, "analytics_grid_tree"):
             return
         if not self._can_edit():
-            self.show_message("Read-only", "Editing is disabled in viewer mode.", kind="info")
+            self.show_toast("Editing is disabled in viewer mode.", kind="warning")
             return
         region = self.analytics_grid_tree.identify("region", event.x, event.y)
         if region != "cell":
@@ -2949,7 +3548,7 @@ class PayrollProcessorGUI:
             return
         if not self._can_edit():
             self._cancel_grid_edit()
-            self.show_message("Read-only", "Editing is disabled in viewer mode.", kind="info")
+            self.show_toast("Editing is disabled in viewer mode.", kind="warning")
             return
         row_id, col_name, old_value = self.grid_editing_cell
         new_value = self.grid_edit_entry.get().strip()
@@ -3086,10 +3685,10 @@ class PayrollProcessorGUI:
 
     def _undo_last_edit(self):
         if not self.edit_undo_stack:
-            self.show_message("Undo", "Nothing to undo.", kind="info")
+            self.show_toast("Nothing to undo.")
             return
         if not self._can_edit():
-            self.show_message("Read-only", "Editing is disabled in viewer mode.", kind="info")
+            self.show_toast("Editing is disabled in viewer mode.", kind="warning")
             return
         last = self.edit_undo_stack.pop()
         entry_id = last["entry_id"]
@@ -3109,10 +3708,10 @@ class PayrollProcessorGUI:
 
     def _redo_last_edit(self):
         if not self.edit_redo_stack:
-            self.show_message("Redo", "Nothing to redo.", kind="info")
+            self.show_toast("Nothing to redo.")
             return
         if not self._can_edit():
-            self.show_message("Read-only", "Editing is disabled in viewer mode.", kind="info")
+            self.show_toast("Editing is disabled in viewer mode.", kind="warning")
             return
         last = self.edit_redo_stack.pop()
         entry_id = last["entry_id"]
@@ -3334,11 +3933,11 @@ class PayrollProcessorGUI:
         if not hasattr(self, "analytics_grid_tree"):
             return
         if not self._can_edit():
-            self.show_message("Read-only", "Editing is disabled in viewer mode.", kind="info")
+            self.show_toast("Editing is disabled in viewer mode.", kind="warning")
             return
         selection = self.analytics_grid_tree.selection()
         if not selection:
-            self.show_message("Edit", "Select a row to edit.", kind="info")
+            self.show_toast("Select a row to edit.")
             return
         row_id = selection[0]
         columns = list(self.analytics_grid_tree["columns"])
@@ -3447,10 +4046,11 @@ class PayrollProcessorGUI:
 
     def _open_duplicate_cleanup(self):
         if not self.db_config.get("enabled"):
-            self.show_message("Database Disabled", "Enable database storage in Settings to manage duplicates.", kind="warning")
+            self.show_toast("Database storage is off — duplicate cleanup needs it.", kind="warning",
+                            action_text="Open Database Settings…", action=self.open_db_settings)
             return
         if not self._can_edit():
-            self.show_message("Read-only", "Editing is disabled in viewer mode.", kind="info")
+            self.show_toast("Editing is disabled in viewer mode.", kind="warning")
             return
         start_date, end_date, document_type, search = self._get_global_filters()
         try:
@@ -3465,7 +4065,7 @@ class PayrollProcessorGUI:
             self.show_message("Duplicates Error", str(exc), kind="warning")
             return
         if not rows:
-            self.show_message("Duplicates", "No duplicate entries found with the current filters.", kind="info")
+            self.show_toast("No duplicate entries found with the current filters.", kind="success")
             return
 
         dialog = tk.Toplevel(self.root)
@@ -3552,7 +4152,7 @@ class PayrollProcessorGUI:
         def delete_selected():
             selection = tree.selection()
             if not selection:
-                self.show_message("Duplicates", "Select one or more duplicate rows to delete.", kind="info")
+                self.show_toast("Select one or more duplicate rows to delete.")
                 return
             entry_ids = [tree.set(item, "entry_id") for item in selection if tree.set(item, "entry_id")]
             if not entry_ids:
@@ -3565,7 +4165,7 @@ class PayrollProcessorGUI:
             except Exception as exc:
                 self.show_message("Delete Error", str(exc), kind="warning")
                 return
-            self.show_message("Delete", f"Deleted {deleted} entries.", kind="info")
+            self.show_toast(f"Deleted {deleted} entries.", kind="success")
             dialog.destroy()
             self._refresh_all_views()
 
@@ -3637,7 +4237,7 @@ class PayrollProcessorGUI:
         available = self.analytics_grid_cache_columns or self.analytics_grid_columns
         available = [col for col in available if col != "entry_id"]
         if not available:
-            self.show_message("Columns", "Refresh the grid first.", kind="info")
+            self.show_toast("Refresh the grid first to load its columns.")
             return
         selected = set(self.analytics_grid_columns or available)
         self._open_column_selector_dialog(
@@ -3649,7 +4249,7 @@ class PayrollProcessorGUI:
 
     def open_detail_column_selector(self):
         if not self.analytics_detail_cache_columns:
-            self.show_message("Columns", "Select an employee first.", kind="info")
+            self.show_toast("Select an employee first.")
             return
         available = list(self.analytics_detail_cache_columns)
         selected = set(self.analytics_detail_columns or available)
@@ -3662,7 +4262,7 @@ class PayrollProcessorGUI:
 
     def open_monthly_column_selector(self):
         if not self.analytics_monthly_cache_columns:
-            self.show_message("Columns", "Refresh the summary first.", kind="info")
+            self.show_toast("Refresh the summary first to load its columns.")
             return
         available = list(self.analytics_monthly_cache_columns)
         selected = set(self.analytics_monthly_columns or available)
@@ -3748,21 +4348,21 @@ class PayrollProcessorGUI:
     def export_active_grid_csv(self):
         tree = self._get_active_analytics_tree()
         if tree is None:
-            self.show_message("Export", "Select a data grid tab to export.", kind="info")
+            self.show_toast("Select a data grid tab to export.")
             return
         self._export_tree_csv(tree, title="Export Data Grid")
 
     def export_active_grid_xlsx(self):
         tree = self._get_active_analytics_tree()
         if tree is None:
-            self.show_message("Export", "Select a data grid tab to export.", kind="info")
+            self.show_toast("Select a data grid tab to export.")
             return
         self._export_tree_xlsx(tree, title="Export Data Grid")
 
     def export_active_grid_pdf(self):
         tree = self._get_active_analytics_tree()
         if tree is None:
-            self.show_message("Export", "Select a data grid tab to export.", kind="info")
+            self.show_toast("Select a data grid tab to export.")
             return
         self._export_tree_pdf(tree, title="Export Data Grid")
 
@@ -3787,7 +4387,8 @@ class PayrollProcessorGUI:
                 writer.writerows(rows)
                 if totals_row:
                     writer.writerow(totals_row)
-            self.show_message("Export", f"CSV exported to:\\n{path}", kind="info")
+            self.show_toast(f"CSV exported to {Path(path).name}", kind="success",
+                            action_text="Show in Finder", action=lambda: self.reveal_in_finder(path))
         except Exception as exc:
             self.show_message("Export Error", str(exc), kind="warning")
 
@@ -3816,7 +4417,8 @@ class PayrollProcessorGUI:
                     total_fmt = writer.book.add_format({"bold": True})
                     for col_idx, value in enumerate(totals_row):
                         worksheet.write(total_row_idx, col_idx, value, total_fmt)
-            self.show_message("Export", f"XLSX exported to:\\n{path}", kind="info")
+            self.show_toast(f"XLSX exported to {Path(path).name}", kind="success",
+                            action_text="Show in Finder", action=lambda: self.reveal_in_finder(path))
         except Exception as exc:
             self.show_message("Export Error", str(exc), kind="warning")
 
@@ -3831,7 +4433,8 @@ class PayrollProcessorGUI:
         columns, rows, meta_lines, totals_row = self._prepare_export_payload(tree)
         try:
             self._write_pdf_report(path, title, columns, rows, meta_lines, totals_row)
-            self.show_message("Export", f"PDF exported to:\\n{path}", kind="info")
+            self.show_toast(f"PDF exported to {Path(path).name}", kind="success",
+                            action_text="Show in Finder", action=lambda: self.reveal_in_finder(path))
         except Exception as exc:
             self.show_message("Export Error", str(exc), kind="warning")
 
@@ -4060,13 +4663,13 @@ class PayrollProcessorGUI:
 
     def _delete_selected_entries(self):
         if not self._can_edit():
-            self.show_message("Read-only", "Editing is disabled in viewer mode.", kind="info")
+            self.show_toast("Editing is disabled in viewer mode.", kind="warning")
             return
         if not hasattr(self, "analytics_grid_tree"):
             return
         selection = self.analytics_grid_tree.selection()
         if not selection:
-            self.show_message("Delete", "Select one or more rows to delete.", kind="info")
+            self.show_toast("Select one or more rows to delete.")
             return
         columns = list(self.analytics_grid_tree["columns"])
         if "entry_id" not in columns:
@@ -4088,7 +4691,7 @@ class PayrollProcessorGUI:
         except Exception as exc:
             self.show_message("Delete Error", str(exc), kind="warning")
             return
-        self.show_message("Delete", f"Deleted {deleted} entries.", kind="info")
+        self.show_toast(f"Deleted {deleted} entries.", kind="success")
         self._refresh_all_views()
 
     def create_dashboard_tab(self):
@@ -4136,14 +4739,34 @@ class PayrollProcessorGUI:
         self.dashboard_mom_employer_cost_var = tk.StringVar(value="—")
         self.dashboard_mom_insurance_var = tk.StringVar(value="—")
         self.dashboard_mom_count_var = tk.StringVar(value="—")
+        # The month-over-month cards show the value large and the change
+        # underneath, coloured by direction, instead of one long line.
+        self.dashboard_mom_net_delta = tk.StringVar(value="")
+        self.dashboard_mom_employer_cost_delta = tk.StringVar(value="")
+        self.dashboard_mom_insurance_delta = tk.StringVar(value="")
+        self.dashboard_mom_count_delta = tk.StringVar(value="")
 
         self._build_kpi_card(cards_frame, 0, "Unpaid (Last Month)", self.dashboard_unpaid_last_month_var, row=1)
         self._build_kpi_card(cards_frame, 1, "Unpaid (Current Month)", self.dashboard_unpaid_current_month_var, row=1)
         self._build_kpi_card(cards_frame, 2, "Unpaid (Current Year)", self.dashboard_unpaid_current_year_var, row=1)
-        self._build_kpi_card(cards_frame, 0, "Net Pay vs Last Month", self.dashboard_mom_net_var, row=2)
-        self._build_kpi_card(cards_frame, 1, "Employer Cost vs Last Month", self.dashboard_mom_employer_cost_var, row=2)
-        self._build_kpi_card(cards_frame, 2, "Insurance vs Last Month", self.dashboard_mom_insurance_var, row=2)
-        self._build_kpi_card(cards_frame, 3, "Employees vs Last Month", self.dashboard_mom_count_var, row=2)
+        self.dashboard_mom_cards = {
+            "net": self._build_kpi_card(
+                cards_frame, 0, "Net Pay vs Last Month", self.dashboard_mom_net_var,
+                row=2, delta_var=self.dashboard_mom_net_delta,
+            ),
+            "employer_cost": self._build_kpi_card(
+                cards_frame, 1, "Employer Cost vs Last Month", self.dashboard_mom_employer_cost_var,
+                row=2, delta_var=self.dashboard_mom_employer_cost_delta,
+            ),
+            "insurance": self._build_kpi_card(
+                cards_frame, 2, "Insurance vs Last Month", self.dashboard_mom_insurance_var,
+                row=2, delta_var=self.dashboard_mom_insurance_delta,
+            ),
+            "count": self._build_kpi_card(
+                cards_frame, 3, "Employees vs Last Month", self.dashboard_mom_count_var,
+                row=2, delta_var=self.dashboard_mom_count_delta,
+            ),
+        }
 
         content_frame = ttk.Frame(self.dashboard_tab, style="App.TFrame")
         content_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
@@ -4197,145 +4820,168 @@ class PayrollProcessorGUI:
         self.dashboard_recent_tree.configure(yscrollcommand=recent_scroll.set, xscrollcommand=recent_x_scroll.set)
 
     def refresh_dashboard(self):
+        """Reload dashboard metrics, alerts and trend, off the UI thread."""
         if not self.db_config.get("enabled"):
             self.dashboard_status_var.set("Database storage is disabled.")
-            self.show_message("Database Disabled", "Enable database storage in Settings to view the dashboard.", kind="warning")
+            self._database_notice(
+                self.dashboard_tab,
+                "KPIs, alerts and trends are read from stored payroll entries. "
+                "Turn storage on, then process a payroll ZIP.",
+            )
             return
+        self._clear_database_notice(self.dashboard_tab)
 
-        self.dashboard_status_var.set("Refreshing...")
+        self.dashboard_status_var.set("Refreshing…")
         try:
             self._refresh_global_filters()
-            start_date, end_date, document_type, search = self._get_global_filters()
+            filters = self._get_global_filters()
+        except Exception as exc:
+            self.dashboard_status_var.set("Refresh failed.")
+            self.show_message("Dashboard Error", str(exc), kind="warning")
+            return
 
-            metrics = db_storage.fetch_dashboard_metrics(
+        self._run_async(
+            "dashboard",
+            lambda: self._fetch_dashboard_data(filters),
+            self._render_dashboard,
+            on_error=self._dashboard_failed,
+        )
+
+    def _fetch_dashboard_data(self, filters):
+        """Every query the dashboard needs. Runs on a worker thread."""
+        start_date, end_date, document_type, search = filters
+        today = datetime.date.today()
+        current_month_start = datetime.date(today.year, today.month, 1)
+        current_month_end = datetime.date(
+            today.year, today.month, calendar.monthrange(today.year, today.month)[1]
+        )
+        last_month_end = current_month_start - datetime.timedelta(days=1)
+        last_month_start = datetime.date(last_month_end.year, last_month_end.month, 1)
+        current_year_start = datetime.date(today.year, 1, 1)
+        current_year_end = datetime.date(today.year, 12, 31)
+
+        anomaly_columns, anomaly_rows = db_storage.fetch_anomaly_entries(
+            self.db_config,
+            start_date=start_date,
+            end_date=end_date,
+            document_type=document_type,
+            search=search or None,
+            limit=20,
+        )
+        recent_columns, recent_rows = db_storage.fetch_recent_entries(
+            self.db_config,
+            start_date=start_date,
+            end_date=end_date,
+            document_type=document_type,
+            search=search or None,
+            limit=20,
+        )
+        return {
+            "metrics": db_storage.fetch_dashboard_metrics(
                 self.db_config,
                 start_date=start_date,
                 end_date=end_date,
                 document_type=document_type,
                 search=search or None,
-            )
-            total_net = metrics["total_net_pay"]
-            total_insurance = metrics["employee_insurance"] + metrics["employer_insurance"]
-            employer_cost = total_net + metrics["employer_insurance"]
-
-            self.dashboard_total_net_var.set(self._format_currency(total_net))
-            self.dashboard_employer_cost_var.set(self._format_currency(employer_cost))
-            self.dashboard_total_insurance_var.set(self._format_currency(total_insurance))
-            self.dashboard_employee_count_var.set(str(metrics["employee_count"]))
-
-            today = datetime.date.today()
-            current_month_start = datetime.date(today.year, today.month, 1)
-            current_month_end = datetime.date(today.year, today.month, calendar.monthrange(today.year, today.month)[1])
-            last_month_end = current_month_start - datetime.timedelta(days=1)
-            last_month_start = datetime.date(last_month_end.year, last_month_end.month, 1)
-            current_year_start = datetime.date(today.year, 1, 1)
-            current_year_end = datetime.date(today.year, 12, 31)
-
-            unpaid_last_month = db_storage.fetch_unpaid_amount(
+            ),
+            "unpaid_last_month": db_storage.fetch_unpaid_amount(
                 self.db_config,
                 start_date=last_month_start,
                 end_date=last_month_end,
                 document_type=document_type,
-            )
-            unpaid_current_month = db_storage.fetch_unpaid_amount(
+            ),
+            "unpaid_current_month": db_storage.fetch_unpaid_amount(
                 self.db_config,
                 start_date=current_month_start,
                 end_date=current_month_end,
                 document_type=document_type,
-            )
-            unpaid_current_year = db_storage.fetch_unpaid_amount(
+            ),
+            "unpaid_current_year": db_storage.fetch_unpaid_amount(
                 self.db_config,
                 start_date=current_year_start,
                 end_date=current_year_end,
                 document_type=document_type,
-            )
-            self.dashboard_unpaid_last_month_var.set(self._format_currency(unpaid_last_month))
-            self.dashboard_unpaid_current_month_var.set(self._format_currency(unpaid_current_month))
-            self.dashboard_unpaid_current_year_var.set(self._format_currency(unpaid_current_year))
-
-            comparison = db_storage.fetch_period_comparison(
+            ),
+            "comparison": db_storage.fetch_period_comparison(
                 self.db_config,
                 year=today.year,
                 month=today.month,
                 document_type=document_type,
                 search=search or None,
-            )
-            self.dashboard_mom_net_var.set(
-                self._format_comparison(comparison.get("net_pay"))
-            )
-            self.dashboard_mom_employer_cost_var.set(
-                self._format_comparison(comparison.get("employer_cost"))
-            )
-            insurance_change = None
-            employee_ins = comparison.get("employee_insurance")
-            employer_ins = comparison.get("employer_insurance")
-            if employee_ins and employer_ins:
-                insurance_change = {
-                    "current": employee_ins["current"] + employer_ins["current"],
-                    "previous": employee_ins["previous"] + employer_ins["previous"],
-                }
-                insurance_change["delta"] = (
-                    insurance_change["current"] - insurance_change["previous"]
-                )
-                insurance_change["pct_change"] = (
-                    insurance_change["delta"] / insurance_change["previous"] * 100.0
-                    if insurance_change["previous"]
-                    else None
-                )
-            self.dashboard_mom_insurance_var.set(self._format_comparison(insurance_change))
-            self.dashboard_mom_count_var.set(
-                self._format_comparison(comparison.get("employee_count"), as_currency=False)
-            )
-
-            monthly_rows = db_storage.fetch_monthly_summary(
+            ),
+            "monthly_rows": db_storage.fetch_monthly_summary(
                 self.db_config,
                 start_date=start_date,
                 end_date=end_date,
                 document_type=document_type,
                 search=search or None,
-            )
-            self._plot_dashboard_summary(monthly_rows)
-
-            anomaly_columns, anomaly_rows = db_storage.fetch_anomaly_entries(
-                self.db_config,
+            ),
+            "anomaly_columns": anomaly_columns,
+            "anomaly_rows": list(anomaly_rows),
+            "jump_rows": self._fetch_jump_alerts(
                 start_date=start_date,
                 end_date=end_date,
                 document_type=document_type,
                 search=search or None,
-                limit=20,
-            )
-            jump_rows = self._fetch_jump_alerts(
-                start_date=start_date,
-                end_date=end_date,
-                document_type=document_type,
-                search=search or None,
-            )
-            self._reset_treeview(self.dashboard_anomaly_tree, anomaly_columns)
-            self._populate_treeview(
-                self.dashboard_anomaly_tree, jump_rows + list(anomaly_rows)
-            )
+            ),
+            "recent_columns": recent_columns,
+            "recent_rows": recent_rows,
+        }
 
-            recent_columns, recent_rows = db_storage.fetch_recent_entries(
-                self.db_config,
-                start_date=start_date,
-                end_date=end_date,
-                document_type=document_type,
-                search=search or None,
-                limit=20,
-            )
-            self._reset_treeview(self.dashboard_recent_tree, recent_columns)
-            self._populate_treeview(self.dashboard_recent_tree, recent_rows)
+    def _render_dashboard(self, data):
+        """Fill the dashboard from fetched data. UI thread only."""
+        metrics = data["metrics"]
+        total_net = metrics["total_net_pay"]
+        total_insurance = metrics["employee_insurance"] + metrics["employer_insurance"]
+        employer_cost = total_net + metrics["employer_insurance"]
 
-            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            self.dashboard_status_var.set(f"Last refreshed at {timestamp}.")
-        except Exception as exc:
-            self.dashboard_status_var.set("Refresh failed.")
-            detail = traceback.format_exc()
-            self.show_message(
-                "Dashboard Error",
-                f"{exc}\n\n{detail}\n(db_storage: {db_storage.__file__})",
-                kind="warning",
+        self.dashboard_total_net_var.set(self._format_currency(total_net))
+        self.dashboard_employer_cost_var.set(self._format_currency(employer_cost))
+        self.dashboard_total_insurance_var.set(self._format_currency(total_insurance))
+        self.dashboard_employee_count_var.set(str(metrics["employee_count"]))
+
+        self.dashboard_unpaid_last_month_var.set(self._format_currency(data["unpaid_last_month"]))
+        self.dashboard_unpaid_current_month_var.set(self._format_currency(data["unpaid_current_month"]))
+        self.dashboard_unpaid_current_year_var.set(self._format_currency(data["unpaid_current_year"]))
+
+        comparison = data["comparison"]
+        self._apply_mom_card("net", comparison.get("net_pay"))
+        self._apply_mom_card("employer_cost", comparison.get("employer_cost"))
+        insurance_change = None
+        employee_ins = comparison.get("employee_insurance")
+        employer_ins = comparison.get("employer_insurance")
+        if employee_ins and employer_ins:
+            insurance_change = {
+                "current": employee_ins["current"] + employer_ins["current"],
+                "previous": employee_ins["previous"] + employer_ins["previous"],
+            }
+            insurance_change["delta"] = (
+                insurance_change["current"] - insurance_change["previous"]
             )
+            insurance_change["pct_change"] = (
+                insurance_change["delta"] / insurance_change["previous"] * 100.0
+                if insurance_change["previous"]
+                else None
+            )
+        self._apply_mom_card("insurance", insurance_change)
+        self._apply_mom_card("count", comparison.get("employee_count"), as_currency=False)
+
+        self._plot_dashboard_summary(data["monthly_rows"])
+
+        self._reset_treeview(self.dashboard_anomaly_tree, data["anomaly_columns"])
+        self._populate_treeview(
+            self.dashboard_anomaly_tree, data["jump_rows"] + data["anomaly_rows"]
+        )
+
+        self._reset_treeview(self.dashboard_recent_tree, data["recent_columns"])
+        self._populate_treeview(self.dashboard_recent_tree, data["recent_rows"])
+
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.dashboard_status_var.set(f"Last refreshed at {timestamp}.")
+
+    def _dashboard_failed(self, exc):
+        self.dashboard_status_var.set("Refresh failed.")
+        self.show_message("Dashboard Error", str(exc), kind="warning")
 
     def _build_monthly_employee_tab(self, parent):
         toolbar = ttk.Frame(parent, style="App.TFrame")
@@ -4391,7 +5037,10 @@ class PayrollProcessorGUI:
     def refresh_monthly_employee_summary(self):
         if not self.db_config.get("enabled"):
             self.analytics_monthly_status_var.set("Database storage is disabled.")
-            self.show_message("Database Disabled", "Enable database storage in Settings to view analytics.", kind="warning")
+            self._database_notice(
+                self.analytics_grid_view_tab,
+                "The monthly summary is built from stored payroll entries. Turn storage on to see it.",
+            )
             return
 
         try:
@@ -4415,11 +5064,12 @@ class PayrollProcessorGUI:
 
     def _mark_monthly_employee_paid(self):
         if not self.db_config.get("enabled"):
-            self.show_message("Database Disabled", "Enable database storage in Settings to update entries.", kind="warning")
+            self.show_toast("Database storage is off — entries cannot be updated.", kind="warning",
+                            action_text="Open Database Settings…", action=self.open_db_settings)
             return
         selection = self.analytics_monthly_tree.selection() if hasattr(self, "analytics_monthly_tree") else []
         if not selection:
-            self.show_message("Mark as Paid", "Select an employee row in Monthly Employee Summary.", kind="info")
+            self.show_toast("Select an employee row in the monthly summary first.")
             return
         columns = list(self.analytics_monthly_tree["columns"])
         values = self.analytics_monthly_tree.item(selection[0], "values")
@@ -4447,7 +5097,7 @@ class PayrollProcessorGUI:
                 year=int(year),
                 month=int(month),
             )
-            self.show_message("Mark as Paid", f"Updated {updated} entries.", kind="info")
+            self.show_toast(f"Marked {updated} entries as paid.", kind="success")
             self.refresh_monthly_employee_summary()
             self.refresh_data_grid()
             self._refresh_kpis()
@@ -4456,14 +5106,15 @@ class PayrollProcessorGUI:
 
     def _create_monthly_reports(self):
         if not self.db_config.get("enabled"):
-            self.show_message("Database Disabled", "Enable database storage in Settings to create reports.", kind="warning")
+            self.show_toast("Database storage is off — monthly reports need it.", kind="warning",
+                            action_text="Open Database Settings…", action=self.open_db_settings)
             return
         if not hasattr(self, "analytics_monthly_tree"):
-            self.show_message("Monthly Reports", "Monthly Employee Summary is not available.", kind="info")
+            self.show_toast("The monthly employee summary is not available yet.")
             return
         selection = self.analytics_monthly_tree.selection()
         if not selection:
-            self.show_message("Monthly Reports", "Select one or more employee rows first.", kind="info")
+            self.show_toast("Select one or more employee rows first.")
             return
         columns = list(self.analytics_monthly_tree["columns"])
         employees = set()
@@ -4482,7 +5133,7 @@ class PayrollProcessorGUI:
             return
         month_labels = self._collect_monthly_report_months()
         if not month_labels:
-            self.show_message("Monthly Reports", "Refresh the summary to load available months.", kind="info")
+            self.show_toast("Refresh the summary to load the available months.")
             return
         selected_labels = self._prompt_month_selection(month_labels)
         if not selected_labels:
@@ -4495,7 +5146,7 @@ class PayrollProcessorGUI:
             except ValueError:
                 continue
         if not months:
-            self.show_message("Monthly Reports", "No valid months selected.", kind="info")
+            self.show_toast("No valid months selected.")
             return
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         output_paths = []
@@ -4565,13 +5216,18 @@ class PayrollProcessorGUI:
                 except Exception as exc:
                     self.show_message("Monthly Report Error", str(exc), kind="warning")
         if not output_paths:
-            self.show_message("Monthly Reports", "No reports were generated.", kind="info")
+            self.show_toast("No reports were generated.", kind="warning")
             return
         summary = f"Created {len(output_paths)} report(s)."
         if skipped:
             summary += f" Skipped {skipped} month(s) with no entries."
-        self.show_message("Monthly Reports", summary, kind="info")
-        self.ask_show_in_finder(output_paths)
+        self.show_toast(
+            summary,
+            kind="success",
+            seconds=8,
+            action_text="Show in Finder",
+            action=lambda: self.reveal_in_finder(*output_paths),
+        )
 
     def _collect_monthly_report_months(self):
         columns = self.analytics_monthly_cache_columns or []
@@ -4746,8 +5402,118 @@ class PayrollProcessorGUI:
             if idx == len(self.search_clauses) - 1 and len(self.search_clauses) < 2:
                 add_btn = ttk.Button(self.search_clause_frame, text="+", width=2, command=self._add_search_clause)
                 add_btn.grid(row=idx, column=3, sticky=tk.W)
+        self._render_filter_chips()
+
+    def _reflow_filter_bar(self, _event=None):
+        """Keep the filter controls on one line, wrapping search when narrow.
+
+        At the 900px minimum window width all four groups do not fit, so the
+        search group drops to its own line instead of being clipped.
+        """
+        controls = getattr(self, "filter_controls", None)
+        search = getattr(self, "filter_search_group", None)
+        if controls is None or search is None:
+            return
+        available = self.global_filter_bar.winfo_width()
+        if available <= 1:
+            available = self.root.winfo_width() - 32
+        trailing = getattr(self, "filter_trailing", None)
+        needed = controls.winfo_reqwidth() + search.winfo_reqwidth() + 24
+        if trailing is not None:
+            needed += trailing.winfo_reqwidth()
+        wrapped = needed > available
+        if wrapped == self.filter_search_wrapped:
+            return
+        self.filter_search_wrapped = wrapped
+        search.grid_forget()
+        if wrapped:
+            search.grid(row=1, column=0, columnspan=3, sticky=tk.W, pady=(8, 0))
+        else:
+            search.grid(row=0, column=1, sticky=tk.W, padx=(18, 0))
+
+    def _reset_global_filters(self):
+        """Clear every filter and search term, then reload the views."""
+        self.global_start_year_var.set("All")
+        self.global_end_year_var.set("All")
+        self.global_start_month_var.set("01")
+        self.global_end_month_var.set("01")
+        self.global_doc_type_var.set("All")
+        self.global_search_var.set("")
+        self.search_clauses = []
+        self._render_search_clauses()
+        self._update_window_label()
+        self._save_ui_prefs()
+        self._refresh_all_views()
+        self.show_toast("Filters cleared.", seconds=3)
+
+    def _active_filter_chips(self):
+        """The filters currently narrowing the data, as (label, clear) pairs."""
+        chips = []
+        start_year = self.global_start_year_var.get()
+        end_year = self.global_end_year_var.get()
+        if start_year and start_year != "All" and end_year and end_year != "All":
+            window = self.global_window_label_var.get() or f"{start_year} → {end_year}"
+
+            def clear_period():
+                self.global_start_year_var.set("All")
+                self.global_end_year_var.set("All")
+                self._on_global_filter_change()
+
+            chips.append((f"Period: {window}", clear_period))
+
+        doc_type = self.global_doc_type_var.get()
+        if doc_type and doc_type != "All":
+            def clear_doc():
+                self.global_doc_type_var.set("All")
+                self._on_global_filter_change()
+
+            chips.append((f"Document: {doc_type}", clear_doc))
+
+        term = self.global_search_var.get().strip()
+        if term:
+            def clear_term():
+                self.global_search_var.set("")
+                self._on_global_filter_change()
+
+            chips.append((f'Search: "{term}"', clear_term))
+
+        for index, clause in enumerate(self.search_clauses):
+            clause_term = clause["term_var"].get().strip()
+            if not clause_term:
+                continue
+            operator = clause["op_var"].get().strip().upper() or "AND"
+            chips.append((
+                f'{operator} "{clause_term}"',
+                lambda i=index: self._remove_search_clause(i),
+            ))
+        return chips
+
+    def _render_filter_chips(self):
+        """Redraw the applied-filter chips under the filter controls."""
+        if not hasattr(self, "filter_chip_frame"):
+            return
+        for child in self.filter_chip_frame.winfo_children():
+            child.destroy()
+        chips = self._active_filter_chips()
+        if not chips:
+            ttk.Label(
+                self.filter_chip_frame,
+                text="No filters applied — showing everything.",
+                style="Hint.TLabel",
+            ).pack(side=tk.LEFT)
+            self.reset_filters_btn.state(["disabled"])
+            return
+        self.reset_filters_btn.state(["!disabled"])
+        for label, clear in chips:
+            chip = ttk.Frame(self.filter_chip_frame, style="Chip.TFrame", padding=(8, 3))
+            chip.pack(side=tk.LEFT, padx=(0, 6))
+            ttk.Label(chip, text=label, style="Chip.TLabel").pack(side=tk.LEFT)
+            close = ttk.Label(chip, text="✕", style="Chip.TLabel", cursor="hand2")
+            close.pack(side=tk.LEFT, padx=(6, 0))
+            close.bind("<Button-1>", lambda _event, fn=clear: fn())
 
     def _refresh_all_views(self):
+        self._render_filter_chips()
         self.refresh_analytics()
         self.refresh_dashboard()
         self.refresh_data_grid()
@@ -4771,6 +5537,7 @@ class PayrollProcessorGUI:
             self.global_window_label_var.set("All months")
             self.global_range_end_year = None
             self.global_range_end_month = None
+            self._render_filter_chips()
             return
         start_year = int(start_year_val)
         start_month = int(start_month_val)
@@ -4789,6 +5556,7 @@ class PayrollProcessorGUI:
         start_label = f"{calendar.month_name[start_month][:3]} {start_year}"
         end_label = f"{calendar.month_name[end_month][:3]} {end_year}"
         self.global_window_label_var.set(f"{start_label} → {end_label}")
+        self._render_filter_chips()
 
     def _get_global_filters(self):
         start_year_val = self.global_start_year_var.get()
@@ -4940,12 +5708,12 @@ class PayrollProcessorGUI:
         """Refresh data shown in the database views tab."""
         if not self.db_config.get("enabled"):
             self.db_status_var.set("Database storage is disabled.")
-            self.show_message(
-                "Database Disabled",
-                "Enable database storage in Settings to view data.",
-                kind="warning",
+            self._database_notice(
+                self.db_tab,
+                "These views query the payroll database directly. Turn storage on to use them.",
             )
             return
+        self._clear_database_notice(self.db_tab)
 
         self.db_status_var.set("Refreshing...")
         errors = []
@@ -5017,7 +5785,7 @@ class PayrollProcessorGUI:
 
         available = self.db_view_available_columns.get(view_name, [])
         if not available:
-            self.show_message("Columns", "Refresh data first to load columns.", kind="info")
+            self.show_toast("Refresh the data first to load its columns.")
             return
 
         selected = set(self.db_view_columns.get(view_name, available))
@@ -5053,19 +5821,10 @@ class PayrollProcessorGUI:
         ttk.Button(button_frame, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT)
 
     def get_instructions_text(self):
-        """Build the instructions text based on drag/drop and output folder."""
+        """One line of guidance; the folder paths live under the progress bar."""
         if DRAG_DROP_AVAILABLE:
-            return ("Drag and drop ZIP or PDF files containing payroll data, "
-                    "or click 'Browse' to select files.\n"
-                    "Then click 'Generate Reports' to process all files.\n"
-                    f"Summary + detail Excel files are saved to:\n{self.employee_reports_dir}\n"
-                    f"Source PDFs are archived under:\n{self.archive_dir}\n"
-                    "Update folders from Settings → Output Folder / PDF Archive Folder.")
-        return ("Click 'Browse' to select ZIP or PDF files containing payroll data.\n"
-                "Then click 'Generate Reports' to process all files.\n"
-                f"Summary + detail Excel files are saved to:\n{self.employee_reports_dir}\n"
-                f"Source PDFs are archived under:\n{self.archive_dir}\n"
-                "Update folders from Settings → Output Folder / PDF Archive Folder.")
+            return "Drop ZIP or PDF payroll files below, or browse for them, then generate the reports."
+        return "Browse for ZIP or PDF payroll files, then generate the reports."
 
     def choose_output_folder(self):
         """Allow the user to choose the output folder."""
@@ -5084,7 +5843,7 @@ class PayrollProcessorGUI:
             self.archive_dir.mkdir(parents=True, exist_ok=True)
         self.signed_docs_dir = self.report_dir / "Signed Documents"
         self.signed_docs_dir.mkdir(parents=True, exist_ok=True)
-        self.output_location_var.set(f"Employee reports folder: {self.employee_reports_dir}")
+        self.output_location_var.set(f"Reports are saved to {self.employee_reports_dir}")
         self.instructions_label.configure(text=self.get_instructions_text())
         self._refresh_settings_labels()
 
@@ -5152,7 +5911,7 @@ class PayrollProcessorGUI:
             f"Errors: {summary['errors']}"
         )
         self._append_processing_log(summary["log_lines"])
-        self.show_message("Signed Docs Imported", message, kind="info")
+        self.show_toast(message, kind="success", seconds=8)
 
     def _archive_signed_documents(self, paths):
         log_lines = [f"=== {datetime.datetime.now().isoformat(timespec='seconds')} ===", "Signed docs import"]
@@ -5501,11 +6260,69 @@ class PayrollProcessorGUI:
         def on_save():
             self.theme_mode_var.set(mode_var.get())
             self._save_ui_prefs()
-            self.configure_styles()
+            self.apply_theme()
             dialog.destroy()
 
-        ttk.Button(button_frame, text="Save", command=on_save).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(button_frame, text="Save", style="Accent.TButton", command=on_save).pack(side=tk.LEFT, padx=(0, 8))
         ttk.Button(button_frame, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT)
+
+    def apply_theme(self):
+        """Repaint the whole app after an appearance change.
+
+        ttk styles only reach ttk widgets. The listbox, the log pane, the lock
+        canvas and every matplotlib figure carry their own colours, so they are
+        repainted here - otherwise switching to dark left a half-light window
+        until the next restart.
+        """
+        self.configure_styles()
+        tokens = self.theme
+        self.root.configure(bg=tokens.bg)
+
+        listbox = getattr(self, "file_listbox", None)
+        if listbox is not None:
+            listbox.configure(
+                bg=tokens.surface,
+                fg=tokens.text_primary,
+                selectbackground=tokens.selection,
+                selectforeground=tokens.text_primary,
+                highlightbackground=tokens.border,
+                highlightcolor=tokens.accent,
+            )
+
+        log_text = getattr(self, "log_text", None)
+        if log_text is not None:
+            log_text.configure(
+                bg=tokens.surface,
+                fg=tokens.text_secondary,
+                insertbackground=tokens.text_primary,
+                highlightbackground=tokens.border,
+            )
+
+        if getattr(self, "lock_canvas", None) is not None:
+            self.lock_canvas.configure(bg=tokens.bg)
+            self._update_lock_indicator()
+
+        if getattr(self, "settings_canvas", None) is not None:
+            self.settings_canvas.configure(bg=tokens.bg)
+
+        # Toasts are built from raw Tk frames; the live ones keep the old
+        # palette, so they are cleared rather than left mismatched.
+        for toast in list(self.toasts):
+            self._dismiss_toast(toast)
+
+        # Give every figure the new background immediately, then re-plot so the
+        # series colours follow too.
+        figures = [chart for chart in getattr(self, "analytics_charts", {}).values()]
+        if getattr(self, "dashboard_chart", None):
+            figures.append(self.dashboard_chart)
+        for chart in figures:
+            chart["fig"].set_facecolor(tokens.chart_bg)
+            chart["ax"].set_facecolor(tokens.chart_bg)
+            chart["canvas"].draw_idle()
+
+        self._render_filter_chips()
+        self._refresh_setup_banner()
+        self._refresh_all_views()
 
     def create_settings_tab(self):
         """Create the Settings tab."""
@@ -5515,9 +6332,40 @@ class PayrollProcessorGUI:
         ttk.Label(header, text="Settings", style="Header.TLabel").grid(row=0, column=0, padx=(0, 10))
         ttk.Label(header, text="Configure storage, database, and appearance.", style="Body.TLabel").grid(row=0, column=1, sticky=tk.W)
 
-        content = ttk.Frame(self.settings_tab, style="App.TFrame")
-        content.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        # The settings groups are taller than the 900x600 minimum window, so
+        # the content scrolls instead of being clipped.
+        self.settings_tab.rowconfigure(1, weight=1)
+        scroll_host = ttk.Frame(self.settings_tab, style="App.TFrame")
+        scroll_host.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        scroll_host.columnconfigure(0, weight=1)
+        scroll_host.rowconfigure(0, weight=1)
+
+        self.settings_canvas = tk.Canvas(
+            scroll_host,
+            highlightthickness=0,
+            bd=0,
+            bg=self.theme.bg,
+        )
+        self.settings_canvas.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        settings_scroll = ttk.Scrollbar(scroll_host, orient=tk.VERTICAL, command=self.settings_canvas.yview)
+        settings_scroll.grid(row=0, column=1, sticky=(tk.N, tk.S))
+        self.settings_canvas.configure(yscrollcommand=settings_scroll.set)
+
+        content = ttk.Frame(self.settings_canvas, style="App.TFrame")
+        content_window = self.settings_canvas.create_window((0, 0), window=content, anchor=tk.NW)
         content.columnconfigure(0, weight=1)
+
+        def _resize_content(_event=None):
+            self.settings_canvas.configure(scrollregion=self.settings_canvas.bbox("all"))
+            self.settings_canvas.itemconfigure(content_window, width=self.settings_canvas.winfo_width())
+
+        content.bind("<Configure>", _resize_content)
+        self.settings_canvas.bind("<Configure>", _resize_content)
+        self.settings_canvas.bind_all(
+            "<MouseWheel>",
+            lambda event: self._scroll_settings(event),
+            add="+",
+        )
 
         storage_frame = ttk.LabelFrame(content, text="Storage", padding=12, style="App.TLabelframe")
         storage_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 12))
@@ -5583,6 +6431,7 @@ class PayrollProcessorGUI:
         ttk.Button(
             db_frame,
             text="Delete All Data…",
+            style="Danger.TButton",
             command=self.delete_all_database_data,
         ).grid(row=2, column=1, padx=(10, 0), pady=(8, 0), sticky=tk.W)
 
@@ -5605,7 +6454,7 @@ class PayrollProcessorGUI:
         frequency_combo["values"] = ["20 minutes", "daily", "weekly"]
         frequency_combo.grid(row=1, column=2, sticky=tk.W, pady=(6, 0))
         frequency_combo.bind("<<ComboboxSelected>>", lambda _event: self._schedule_auto_backup())
-        ttk.Button(backup_frame, text="Run Backup Now", command=self.run_total_backup).grid(row=2, column=0, pady=(8, 0), sticky=tk.W)
+        ttk.Button(backup_frame, text="Run Backup Now", command=self._run_backup_now).grid(row=2, column=0, pady=(8, 0), sticky=tk.W)
         ttk.Button(backup_frame, text="Verify Backup…", command=self.verify_backup).grid(row=2, column=1, padx=(10, 0), pady=(8, 0), sticky=tk.W)
 
         appearance_frame = ttk.LabelFrame(content, text="Appearance & Editing", padding=12, style="App.TLabelframe")
@@ -5618,6 +6467,18 @@ class PayrollProcessorGUI:
             variable=self.edit_lock_var,
             command=self._toggle_edit_lock,
         ).grid(row=0, column=1, sticky=tk.W)
+
+    def _scroll_settings(self, event):
+        """Wheel scrolling for the settings pane, only while it is visible."""
+        canvas = getattr(self, "settings_canvas", None)
+        if canvas is None:
+            return
+        try:
+            if self.notebook.select() != str(self.settings_tab):
+                return
+            canvas.yview_scroll(-1 * int(event.delta), "units")
+        except tk.TclError:
+            return
 
     def _refresh_settings_labels(self):
         if hasattr(self, "settings_reports_var"):
@@ -5633,7 +6494,8 @@ class PayrollProcessorGUI:
 
     def backup_database(self):
         if not self.db_config.get("enabled"):
-            self.show_message("Database Disabled", "Enable database storage to back up data.", kind="warning")
+            self.show_toast("Database storage is off — there is nothing to back up.", kind="warning",
+                            action_text="Open Database Settings…", action=self.open_db_settings)
             return
         path = filedialog.asksaveasfilename(
             title="Save Database Backup",
@@ -5644,13 +6506,15 @@ class PayrollProcessorGUI:
             return
         try:
             db_storage.backup_database(self.db_config, path)
-            self.show_message("Backup Complete", f"Database backup saved to:\n{path}", kind="info")
+            self.show_toast(f"Database backup saved to {Path(path).name}", kind="success",
+                            action_text="Show in Finder", action=lambda: self.reveal_in_finder(path))
         except Exception as exc:
             self.show_message("Backup Error", str(exc), kind="warning")
 
     def restore_database(self):
         if not self.db_config.get("enabled"):
-            self.show_message("Database Disabled", "Enable database storage to restore data.", kind="warning")
+            self.show_toast("Database storage is off — turn it on before restoring.", kind="warning",
+                            action_text="Open Database Settings…", action=self.open_db_settings)
             return
         path = filedialog.askopenfilename(
             title="Restore Database Backup",
@@ -5665,14 +6529,15 @@ class PayrollProcessorGUI:
             return
         try:
             db_storage.restore_database(self.db_config, path)
-            self.show_message("Restore Complete", "Database restore finished.", kind="info")
+            self.show_toast("Database restore finished.", kind="success")
             self._refresh_all_views()
         except Exception as exc:
             self.show_message("Restore Error", str(exc), kind="warning")
 
     def export_database_csv(self):
         if not self.db_config.get("enabled"):
-            self.show_message("Database Disabled", "Enable database storage to export data.", kind="warning")
+            self.show_toast("Database storage is off — there is nothing to export.", kind="warning",
+                            action_text="Open Database Settings…", action=self.open_db_settings)
             return
         output_dir = filedialog.askdirectory(
             title="Select Folder for CSV Export",
@@ -5681,13 +6546,15 @@ class PayrollProcessorGUI:
             return
         try:
             db_storage.export_all_tables_to_csv(self.db_config, output_dir)
-            self.show_message("Export Complete", f"CSV files saved to:\n{output_dir}", kind="info")
+            self.show_toast("CSV files exported.", kind="success",
+                            action_text="Show in Finder", action=lambda: self.reveal_in_finder(output_dir))
         except Exception as exc:
             self.show_message("Export Error", str(exc), kind="warning")
 
     def delete_all_database_data(self):
         if not self.db_config.get("enabled"):
-            self.show_message("Database Disabled", "Enable database storage to delete data.", kind="warning")
+            self.show_toast("Database storage is off — there is nothing to delete.", kind="warning",
+                            action_text="Open Database Settings…", action=self.open_db_settings)
             return
         confirm = messagebox.askyesno(
             "Delete All Data",
@@ -5698,11 +6565,11 @@ class PayrollProcessorGUI:
             return
         typed = simpledialog.askstring("Confirm Delete", "Type DELETE to confirm.", parent=self.root)
         if typed != "DELETE":
-            self.show_message("Delete Cancelled", "Delete All Data was cancelled.", kind="info")
+            self.show_toast("Delete All Data was cancelled.")
             return
         try:
             db_storage.delete_all_data(self.db_config)
-            self.show_message("Delete Complete", "All database data has been removed.", kind="info")
+            self.show_toast("All database data has been removed.", kind="success")
             self._refresh_all_views()
             self._clear_employee_profile()
         except Exception as exc:
@@ -5733,7 +6600,7 @@ class PayrollProcessorGUI:
         self._refresh_settings_labels()
         self._toggle_watch_folder()
 
-    def run_total_backup(self):
+    def run_total_backup(self, notify=True):
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_path = self.backup_dir / f"backup_{timestamp}.zip"
         temp_dir = Path(tempfile.mkdtemp(prefix="backup_"))
@@ -5764,11 +6631,22 @@ class PayrollProcessorGUI:
                         zf.write(path, path.relative_to(temp_dir))
             self.last_backup_at = timestamp
             self.root.after(0, self._save_ui_prefs)
-            self.show_message("Backup Complete", f"Backup saved to:\n{backup_path}", kind="info")
+            if notify:
+                self.show_toast(f"Backup saved to {Path(backup_path).name}", kind="success",
+                                action_text="Show in Finder", action=lambda: self.reveal_in_finder(backup_path))
         except Exception as exc:
-            self.show_message("Backup Error", str(exc), kind="warning")
+            if notify:
+                self.show_message("Backup Error", str(exc), kind="warning")
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def _run_backup_now(self):
+        """Back up on demand without freezing the window."""
+        if self._auto_backup_running:
+            self.show_toast("A backup is already running.", kind="warning")
+            return
+        self.show_toast("Backing up… this can take a while.", seconds=4)
+        self._start_auto_backup()
 
     def _get_auto_backup_interval_seconds(self):
         frequency = (self.auto_backup_frequency_var.get() or "").strip().lower()
@@ -5836,7 +6714,7 @@ class PayrollProcessorGUI:
                 if missing:
                     self.show_message("Verify Backup", f"Backup missing: {', '.join(missing)}", kind="warning")
                 else:
-                    self.show_message("Verify Backup", "Backup looks valid.", kind="info")
+                    self.show_toast("Backup looks valid.", kind="success")
         except Exception as exc:
             self.show_message("Verify Backup Error", str(exc), kind="warning")
 
@@ -5855,9 +6733,207 @@ class PayrollProcessorGUI:
         return (now - last).days >= 1
 
     def _on_close(self):
-        if self.auto_backup_enabled_var.get():
-            self.run_total_backup()
-        self.root.destroy()
+        """Quit, running the closing backup visibly instead of freezing."""
+        if not self.auto_backup_enabled_var.get():
+            self.root.destroy()
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Backing up")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        frame = ttk.Frame(dialog, padding=20)
+        frame.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(frame, text="Backing up before quitting…", style="Section.TLabel").pack(anchor=tk.W)
+        ttk.Label(
+            frame,
+            text="Auto backup is on, so the database and archived PDFs are being zipped.",
+            style="Body.TLabel",
+            wraplength=360,
+            justify=tk.LEFT,
+        ).pack(anchor=tk.W, pady=(6, 12))
+        progress = ttk.Progressbar(frame, mode="indeterminate", length=320)
+        progress.pack(fill=tk.X)
+        progress.start(12)
+        dialog.protocol("WM_DELETE_WINDOW", lambda: None)
+        dialog.grab_set()
+        dialog.update_idletasks()
+
+        def _worker():
+            try:
+                self.run_total_backup(notify=False)
+            finally:
+                self.root.after(0, self.root.destroy)
+
+        threading.Thread(target=_worker, name="payroll-final-backup", daemon=True).start()
+
+    # ------------------------------------------------------------------
+    # Notifications
+    # ------------------------------------------------------------------
+
+    def _run_async(self, name, work, on_done, on_error=None):
+        """Run a blocking query off the Tk thread and apply its result on it.
+
+        Each name keeps a generation counter, so a refresh that is superseded
+        while it is still running is discarded instead of overwriting the newer
+        one - which is what happens when the user changes filters quickly.
+        """
+        generation = self._async_tokens.get(name, 0) + 1
+        self._async_tokens[name] = generation
+
+        def _post(error, result, callback):
+            try:
+                self.root.after(0, lambda: self._async_finish(name, generation, error, result, callback))
+            except tk.TclError:
+                # The window closed while the query was still running.
+                pass
+
+        def _worker():
+            try:
+                result = work()
+            except Exception as exc:  # surfaced on the UI thread below
+                _post(exc, None, on_error)
+                return
+            _post(None, result, on_done)
+
+        thread = threading.Thread(target=_worker, name=f"payroll-{name}", daemon=True)
+        thread.start()
+
+    def _async_finish(self, name, generation, error, result, callback):
+        if self._async_tokens.get(name) != generation:
+            return
+        if error is not None:
+            if callback is not None:
+                callback(error)
+            return
+        callback(result)
+
+    def show_toast(self, message, kind="info", seconds=5, action_text=None, action=None):
+        """Non-blocking notice in the bottom-right corner.
+
+        Anything the user does not have to acknowledge - guidance, a
+        confirmation, a finished export - belongs here rather than in a modal
+        dialog, which stops the app until it is dismissed. Errors that need a
+        decision still use ``show_message``.
+        """
+        def _show():
+            tokens = self.theme
+            accent = {
+                "info": tokens.accent,
+                "success": tokens.positive,
+                "warning": tokens.warning,
+                "error": tokens.negative,
+            }.get(kind, tokens.accent)
+
+            toast = tk.Frame(
+                self.root,
+                bg=tokens.surface,
+                highlightbackground=tokens.border,
+                highlightcolor=tokens.border,
+                highlightthickness=1,
+                bd=0,
+            )
+            stripe = tk.Frame(toast, bg=accent, width=4)
+            stripe.pack(side=tk.LEFT, fill=tk.Y)
+            body = tk.Frame(toast, bg=tokens.surface)
+            body.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=12, pady=10)
+            label = tk.Label(
+                body,
+                text=message,
+                bg=tokens.surface,
+                fg=tokens.text_primary,
+                justify=tk.LEFT,
+                wraplength=320,
+                font=(tokens.font_base, 11),
+            )
+            label.pack(anchor=tk.W)
+            if action_text and action:
+                link = tk.Label(
+                    body,
+                    text=action_text,
+                    bg=tokens.surface,
+                    fg=accent,
+                    cursor="hand2",
+                    font=(tokens.font_base, 11, "bold"),
+                )
+                link.pack(anchor=tk.W, pady=(6, 0))
+                link.bind("<Button-1>", lambda _event: self._run_toast_action(toast, action))
+            for widget in (toast, body, label):
+                widget.bind("<Button-1>", lambda _event, t=toast: self._dismiss_toast(t))
+
+            self.toasts.append(toast)
+            while len(self.toasts) > 3:
+                self._dismiss_toast(self.toasts[0])
+            self._layout_toasts()
+            self.root.after(int(seconds * 1000), lambda: self._dismiss_toast(toast))
+
+        self.root.after(0, _show)
+
+    def _run_toast_action(self, toast, action):
+        self._dismiss_toast(toast)
+        try:
+            action()
+        except Exception as exc:  # an action failing must not kill the toast layer
+            self.show_message("Error", str(exc), kind="warning")
+
+    def _dismiss_toast(self, toast):
+        if toast in self.toasts:
+            self.toasts.remove(toast)
+        try:
+            toast.destroy()
+        except tk.TclError:
+            pass
+        self._layout_toasts()
+
+    def _layout_toasts(self):
+        """Stack the live toasts upward from the bottom-right corner."""
+        offset = 16
+        for toast in reversed(self.toasts):
+            try:
+                toast.place(relx=1.0, rely=1.0, anchor=tk.SE, x=-16, y=-offset)
+                toast.lift()
+                toast.update_idletasks()
+                offset += toast.winfo_reqheight() + 8
+            except tk.TclError:
+                continue
+
+    def _database_notice(self, container, message):
+        """Show an inline 'database is off' panel over a view.
+
+        Refreshing a view the database feeds used to raise a modal warning, so
+        moving between tabs with storage disabled meant dismissing a dialog per
+        tab. The panel says the same thing without blocking, and offers the
+        action that fixes it.
+        """
+        entry = self._db_notice_panels.get(container)
+        if entry is None:
+            panel = ttk.Frame(container, style="Empty.TFrame", padding=24)
+            ttk.Label(panel, text="Database storage is off", style="EmptyTitle.TLabel").pack(anchor=tk.W)
+            body = ttk.Label(
+                panel,
+                text=message,
+                style="EmptyBody.TLabel",
+                wraplength=380,
+                justify=tk.LEFT,
+            )
+            body.pack(anchor=tk.W, pady=(6, 14))
+            ttk.Button(
+                panel,
+                text="Open Database Settings…",
+                style="Accent.TButton",
+                command=self.open_db_settings,
+            ).pack(anchor=tk.W)
+            self._db_notice_panels[container] = (panel, body)
+        else:
+            panel, body = entry
+            body.configure(text=message)
+        panel.place(relx=0.5, rely=0.42, anchor=tk.CENTER)
+        panel.lift()
+
+    def _clear_database_notice(self, container):
+        entry = self._db_notice_panels.get(container)
+        if entry:
+            entry[0].place_forget()
 
     def show_message(self, title, message, kind="info", auto_close_seconds=None):
         """Show dialogs from the main thread."""
@@ -5896,6 +6972,78 @@ class PayrollProcessorGUI:
                 handle.write("\n")
         except OSError:
             pass
+        self.log_lines(lines)
+
+    def log_lines(self, lines):
+        """Append lines to the on-screen processing log, from any thread."""
+        text = "\n".join(str(line) for line in lines)
+        if not text:
+            return
+
+        def _append():
+            widget = getattr(self, "log_text", None)
+            if widget is None:
+                return
+            widget.configure(state=tk.NORMAL)
+            widget.insert(tk.END, text + "\n")
+            widget.see(tk.END)
+            widget.configure(state=tk.DISABLED)
+
+        self.root.after(0, _append)
+
+    def _toggle_processing_log(self):
+        """Show or hide the live processing log."""
+        if self.log_visible:
+            self.log_frame.grid_forget()
+            self.log_toggle_btn.configure(text="Show log")
+        else:
+            self.log_frame.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(8, 0))
+            self.log_toggle_btn.configure(text="Hide log")
+        self.log_visible = not self.log_visible
+
+    def _refresh_setup_banner(self):
+        """Surface anything that blocks a first run, inline and dismissable.
+
+        Missing dependencies used to appear only as a line of status text, and
+        database storage being off was invisible until a view complained.
+        """
+        banner = getattr(self, "setup_banner", None)
+        if banner is None:
+            return
+        for child in self.setup_banner_actions.winfo_children():
+            child.destroy()
+
+        if self.missing_dependencies:
+            self.setup_banner_title.configure(text="A required tool is missing")
+            self.setup_banner_body.configure(
+                text="Payroll Processor needs " + ", ".join(self.missing_dependencies)
+                + ". PDF parsing will fail until it is installed."
+            )
+            ttk.Button(
+                self.setup_banner_actions,
+                text="Copy install command",
+                style="Accent.TButton",
+                command=lambda: self._copy_value_to_clipboard("brew install poppler", label="Install command"),
+            ).pack(side=tk.LEFT)
+            banner.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(0, 12))
+            return
+
+        if not self.db_config.get("enabled"):
+            self.setup_banner_title.configure(text="Database storage is off")
+            self.setup_banner_body.configure(
+                text="Reports still work, but the dashboard, analytics, insurance and "
+                     "employee views stay empty until storage is on."
+            )
+            ttk.Button(
+                self.setup_banner_actions,
+                text="Open Database Settings…",
+                style="Accent.TButton",
+                command=self.open_db_settings,
+            ).pack(side=tk.LEFT)
+            banner.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(0, 12))
+            return
+
+        banner.grid_forget()
 
     def _can_edit(self):
         return (
@@ -5907,16 +7055,17 @@ class PayrollProcessorGUI:
         locked = bool(self.edit_lock_var.get())
         self._save_ui_prefs()
         self._update_lock_indicator()
-        if locked:
-            self.show_message("Edit Lock", "Editing is locked.", kind="info")
-        else:
-            self.show_message("Edit Lock", "Editing is unlocked.", kind="info")
+        self.show_toast(
+            "Table editing locked." if locked else "Table editing unlocked.",
+            kind="info",
+            seconds=3,
+        )
 
     def _update_lock_indicator(self):
         if not hasattr(self, "lock_canvas"):
             return
         locked = bool(self.edit_lock_var.get())
-        color = "#C0392B" if locked else "#1E88E5"
+        color = self.theme.danger if locked else self.theme.accent
         canvas = self.lock_canvas
         canvas.delete("lock")
         canvas.create_arc(5, 2, 17, 14, start=0, extent=180, style=tk.ARC, width=2, outline=color, tags="lock")
@@ -5947,15 +7096,17 @@ class PayrollProcessorGUI:
         }
         db_storage.save_ui_prefs(prefs)
 
-    def ask_show_in_finder(self, paths):
-        """Ask the user to reveal output files in Finder."""
-        def _ask():
-            if messagebox.askyesno("Show in Finder", "Open the output files in Finder?"):
-                for path in paths:
-                    if path:
-                        subprocess.run(["open", "-R", path], check=False)
-        self.root.after(0, _ask)
-    
+    def reveal_in_finder(self, *paths):
+        """Reveal the given files or folders in Finder."""
+        for path in paths:
+            if not path:
+                continue
+            target = Path(path)
+            if target.is_dir():
+                subprocess.run(["open", str(target)], check=False)
+            else:
+                subprocess.run(["open", "-R", str(target)], check=False)
+
     def check_missing_dependencies(self) -> List[str]:
         """Return a list of missing external dependencies."""
         missing = []
@@ -6015,9 +7166,7 @@ class PayrollProcessorGUI:
     
     def browse_files(self):
         """Open file browser to select ZIP files."""
-        print("DEBUG: browse_files() called")  # Debug print
         if self.processing:
-            print("DEBUG: browse_files() - currently processing, returning")  # Debug print
             return
             
         files = filedialog.askopenfilenames(
@@ -6025,15 +7174,12 @@ class PayrollProcessorGUI:
             filetypes=[("Payroll files", "*.zip *.pdf"), ("ZIP files", "*.zip"), ("PDF files", "*.pdf"), ("All files", "*.*")]
         )
         
-        print(f"DEBUG: Selected files: {files}")  # Debug print
         
         # Add selected files
         for file_path in files:
             if file_path not in self.zip_files:
                 self.zip_files.append(file_path)
-                print(f"DEBUG: Added file: {file_path}")  # Debug print
         
-        print(f"DEBUG: zip_files after adding: {self.zip_files}")  # Debug print
         self.update_file_list()
         self.update_ui_state()
     
@@ -6071,33 +7217,38 @@ class PayrollProcessorGUI:
         for zip_file in self.zip_files:
             filename = os.path.basename(zip_file)
             self.file_listbox.insert(tk.END, filename)
-        
-        # Hide/show drop label
-        if DRAG_DROP_AVAILABLE:
-            if self.zip_files:
-                self.drop_label.place_forget()
-            else:
-                self.drop_label.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+
+        count = len(self.zip_files)
+        if count == 0:
+            self.file_count_var.set("No files selected")
+        elif count == 1:
+            self.file_count_var.set("1 file ready")
+        else:
+            self.file_count_var.set(f"{count} files ready")
+
+        # The drop hint belongs to the empty state only.
+        if self.zip_files:
+            self.drop_label.place_forget()
+        else:
+            self.drop_label.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
     
     def update_ui_state(self):
         """Update button states based on current state."""
         has_files = bool(self.zip_files)
-        print(f"DEBUG: update_ui_state - has_files={has_files}, processing={self.processing}")  # Debug print
-        print(f"DEBUG: zip_files content: {self.zip_files}")  # Debug print
         deps_ready = not self.missing_dependencies
         
         # Enable/disable buttons based on state
         state = tk.DISABLED if self.processing else tk.NORMAL
         generate_state = state if has_files else tk.DISABLED
-        print(f"DEBUG: generate_btn state will be: {generate_state}")  # Debug print
         
         self.browse_btn.configure(state=state)
         self.remove_btn.configure(state=state if has_files else tk.DISABLED)
         self.clear_btn.configure(state=state if has_files else tk.DISABLED)
         self.generate_btn.configure(state=generate_state)
-        
+
         if not deps_ready:
             self.warn_missing_dependencies()
+        self._refresh_setup_banner()
 
     def _init_watch_state(self):
         if self.watch_enabled_var.get():
@@ -6174,13 +7325,9 @@ class PayrollProcessorGUI:
     
     def generate_reports(self, files_override=None, auto_trigger=False):
         """Generate payroll reports from selected files."""
-        print("DEBUG: generate_reports() called")  # Debug print
-        print(f"DEBUG: zip_files = {self.zip_files}")  # Debug print
-        print(f"DEBUG: processing = {self.processing}")  # Debug print
         files_to_process = list(files_override) if files_override is not None else list(self.zip_files)
 
         if not files_to_process:
-            print("DEBUG: No files found")  # Debug print
             if not auto_trigger:
                 messagebox.showwarning("No Files", "Please select ZIP or PDF files first.")
             return
@@ -6189,7 +7336,6 @@ class PayrollProcessorGUI:
             return
         
         if self.processing:
-            print("DEBUG: Already processing")  # Debug print
             return
         
         # Determine automatic output locations (summary & detail)
@@ -6200,7 +7346,7 @@ class PayrollProcessorGUI:
         detail_path = str(detail_path)
         self.last_output_path = summary_path
         self.current_output_paths = (summary_path, detail_path)
-        self.output_location_var.set(f"Saving summary to:\n{summary_path}\nDetail to:\n{detail_path}")
+        self.output_location_var.set(f"Writing reports to {self.employee_reports_dir}")
         self.update_status("Starting report generation...")
         
         # Start processing in a separate thread
@@ -6447,7 +7593,7 @@ class PayrollProcessorGUI:
                                 summary_text.append(f"Insurance claims processed: {claim_count} (database disabled).")
                         self.update_status("Non-payroll files processed.")
                         self._append_processing_log(log_lines)
-                        self.show_message("Processing Complete", "\n".join(summary_text), kind="info", auto_close_seconds=10)
+                        self.show_toast("\n".join(summary_text), kind="success", seconds=10)
                     else:
                         self.update_status("No payroll data found in any files.")
                         self.show_message("No Data", "No payroll data could be extracted from the selected files.", kind="error")
@@ -6533,7 +7679,7 @@ class PayrollProcessorGUI:
                         summary_text += f"\n• Insurance claims processed: {claim_count} (database disabled)"
 
                 self.root.after(0, lambda: self.output_location_var.set(
-                    f"Last summary: {summary_output}\nLast detail: {detail_output}"
+                    f"Last run wrote {Path(summary_output).name} and {Path(detail_output).name}"
                 ))
                 log_lines.append(f"Summary: {summary_output}")
                 log_lines.append(f"Detail: {detail_output}")
@@ -6548,8 +7694,13 @@ class PayrollProcessorGUI:
                         else:
                             log_lines.append(f"Insurance claims: stored {claim_store_count} rows")
                 self._append_processing_log(log_lines)
-                self.show_message("Success", summary_text, kind="info", auto_close_seconds=10)
-                self.ask_show_in_finder([summary_output, detail_output])
+                self.show_toast(
+                    summary_text,
+                    kind="success",
+                    seconds=12,
+                    action_text="Show in Finder",
+                    action=lambda: self.reveal_in_finder(summary_output, detail_output),
+                )
                 
         except Exception as e:
             self.update_status(f"Error: {str(e)}")
