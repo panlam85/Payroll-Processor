@@ -29,11 +29,21 @@ def test_find_pg_tool_falls_back_to_install_locations(monkeypatch, tmp_path):
 
     real_path = db_storage.Path
 
-    # Redirect the hard-coded search bases at our temp dir.
+    # Redirect every hard-coded search base at our temp dir, including the two
+    # that are globbed - otherwise a real PostgreSQL install under
+    # /Library/PostgreSQL is found first and the test depends on the machine.
+    empty_root = tmp_path / "none"
+    empty_root.mkdir()
     monkeypatch.setattr(
         db_storage,
         "Path",
-        lambda p: bin_dir if p in ("/opt/homebrew/bin", "/usr/local/bin") else real_path(p),
+        lambda p: (
+            bin_dir
+            if p in ("/opt/homebrew/bin", "/usr/local/bin")
+            else empty_root
+            if p in ("/Applications/Postgres.app/Contents/Versions", "/Library/PostgreSQL")
+            else real_path(p)
+        ),
     )
 
     assert db_storage._find_pg_tool("pg_dump") == str(tool)
@@ -48,7 +58,14 @@ def test_find_pg_tool_returns_none_when_absent(monkeypatch, tmp_path):
     monkeypatch.setattr(
         db_storage,
         "Path",
-        lambda p: empty if p in ("/opt/homebrew/bin", "/usr/local/bin") else real_path(p),
+        lambda p: empty
+        if p in (
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/Applications/Postgres.app/Contents/Versions",
+            "/Library/PostgreSQL",
+        )
+        else real_path(p),
     )
     assert db_storage._find_pg_tool("definitely_not_a_tool") is None
 
