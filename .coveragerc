@@ -1,5 +1,5 @@
 [run]
-source = src
+source = versions/v3.1.3/src
 omit =
     */src/payroll_gui.py
     */src/theme_config.py
