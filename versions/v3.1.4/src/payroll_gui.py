@@ -148,6 +148,7 @@ class PayrollProcessorGUI:
                 db_storage.migrate_paid_date_column(self.db_config)
                 db_storage.ensure_insurance_claims_table(self.db_config)
                 db_storage.ensure_employee_profile_columns(self.db_config)
+                db_storage.migrate_signed_flags(self.db_config)
             except Exception:
                 pass
         self.global_start_year_var = tk.StringVar(value="All")
@@ -715,6 +716,9 @@ class PayrollProcessorGUI:
             ("insurance_burden", "Insurance Burden %"),
             ("paid_aging", "Paid vs Unpaid + Aging"),
             ("avg_days_paid", "Avg Days to Paid"),
+            ("cost_ratio", "Employer Cost vs Net Pay"),
+            ("headcount", "Headcount Trend"),
+            ("pay_distribution", "Median vs Average Pay"),
         ):
             frame = ttk.Frame(self.analytics_notebook, padding=8, style="App.TFrame")
             fig = Figure(figsize=(8, 5), dpi=100)
@@ -841,6 +845,27 @@ class PayrollProcessorGUI:
                     search=search or None,
                 )
 
+            cost_ratio_rows = db_storage.fetch_employer_cost_ratio_by_month(
+                self.db_config,
+                start_date=start_date,
+                end_date=end_date,
+                document_type=document_type,
+                search=search or None,
+            )
+            headcount_rows = db_storage.fetch_headcount_trend(
+                self.db_config,
+                start_date=start_date,
+                end_date=end_date,
+                search=search or None,
+            )
+            distribution_rows = db_storage.fetch_net_pay_distribution(
+                self.db_config,
+                start_date=start_date,
+                end_date=end_date,
+                document_type=document_type,
+                search=search or None,
+            )
+
             self._refresh_kpis()
 
             self._plot_monthly_burn(monthly_rows)
@@ -854,6 +879,9 @@ class PayrollProcessorGUI:
             self._plot_insurance_burden(monthly_totals)
             self._plot_paid_aging(paid_unpaid, unpaid_buckets)
             self._plot_avg_days_to_paid(avg_days_rows)
+            self._plot_cost_ratio(cost_ratio_rows)
+            self._plot_headcount_trend(headcount_rows)
+            self._plot_pay_distribution(distribution_rows)
             for chart in self.analytics_charts.values():
                 chart["canvas"].draw()
             timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1061,6 +1089,77 @@ class PayrollProcessorGUI:
         ax.set_title("Average Days to Paid")
         ax.set_ylabel("Days")
         ax.tick_params(axis="x", rotation=45)
+
+    def _plot_cost_ratio(self, rows):
+        ax = self.analytics_charts["cost_ratio"]["ax"]
+        ax.clear()
+        if not rows:
+            ax.set_title("Employer Cost vs Net Pay")
+            ax.text(0.5, 0.5, "No data", ha="center", va="center")
+            return
+        labels = []
+        ratios = []
+        for year, month, _net_pay, _employer_cost, ratio in rows:
+            labels.append(f"{int(year):04d}-{int(month):02d}")
+            ratios.append(float(ratio or 0))
+        ax.plot(labels, ratios, marker="o", color="#00897B")
+        # 1.0 means the employer pays exactly the take-home amount and nothing more.
+        ax.axhline(1.0, color="#B0BEC5", linestyle="--", linewidth=1)
+        ax.set_title("Employer Cost per € of Net Pay")
+        ax.set_ylabel("Cost ratio")
+        ax.tick_params(axis="x", rotation=45)
+
+    def _plot_headcount_trend(self, rows):
+        ax = self.analytics_charts["headcount"]["ax"]
+        ax.clear()
+        if not rows:
+            ax.set_title("Headcount Trend")
+            ax.text(0.5, 0.5, "No data", ha="center", va="center")
+            return
+        labels = []
+        headcounts = []
+        joiners = []
+        leavers = []
+        for year, month, headcount, joined, left in rows:
+            labels.append(f"{int(year):04d}-{int(month):02d}")
+            headcounts.append(int(headcount or 0))
+            joiners.append(int(joined or 0))
+            leavers.append(-int(left or 0))
+        ax.bar(labels, joiners, color="#43A047", label="Joined")
+        ax.bar(labels, leavers, color="#E53935", label="Left")
+        ax.plot(labels, headcounts, marker="o", color="#1565C0", label="Headcount")
+        ax.axhline(0, color="#B0BEC5", linewidth=1)
+        ax.set_title("Headcount Trend with Joiners and Leavers")
+        ax.set_ylabel("Employees")
+        ax.tick_params(axis="x", rotation=45)
+        ax.legend(loc="best", fontsize=8)
+
+    def _plot_pay_distribution(self, rows):
+        ax = self.analytics_charts["pay_distribution"]["ax"]
+        ax.clear()
+        if not rows:
+            ax.set_title("Median vs Average Pay")
+            ax.text(0.5, 0.5, "No data", ha="center", va="center")
+            return
+        labels = []
+        averages = []
+        medians = []
+        p25s = []
+        p75s = []
+        for year, month, avg, median, p25, p75, _headcount in rows:
+            labels.append(f"{int(year):04d}-{int(month):02d}")
+            averages.append(float(avg or 0))
+            medians.append(float(median or 0))
+            p25s.append(float(p25 or 0))
+            p75s.append(float(p75 or 0))
+        # The shaded band is the interquartile range: where the middle half sits.
+        ax.fill_between(labels, p25s, p75s, color="#90CAF9", alpha=0.35, label="25th–75th pct")
+        ax.plot(labels, averages, marker="o", color="#E53935", label="Average")
+        ax.plot(labels, medians, marker="s", color="#1565C0", label="Median")
+        ax.set_title("Median vs Average Monthly Net Pay")
+        ax.set_ylabel("Net Pay")
+        ax.tick_params(axis="x", rotation=45)
+        ax.legend(loc="best", fontsize=8)
 
     def _plot_payment_heatmap(self, rows, year=None, month=None):
         self.analytics_heatmap_ax = self.analytics_charts["heatmap"]["ax"]
@@ -2147,6 +2246,29 @@ class PayrollProcessorGUI:
             return f"€ {value:,.2f}"
         except Exception:
             return "€ 0.00"
+
+    def _format_comparison(self, change, as_currency=True):
+        """Render a period-over-period change as "current (±delta, ±pct)".
+
+        A previous value of zero yields "n/a" for the percentage rather than a
+        misleading infinity, and an absent change renders as an em dash.
+        """
+        if not change:
+            return "—"
+        current = change.get("current") or 0
+        delta = change.get("delta") or 0
+        pct = change.get("pct_change")
+        if as_currency:
+            current_text = self._format_currency(current)
+            delta_text = f"{'+' if delta >= 0 else '−'}{abs(delta):,.2f}"
+        else:
+            current_text = f"{int(current)}"
+            delta_text = f"{'+' if delta >= 0 else '−'}{abs(int(delta))}"
+        if pct is None:
+            pct_text = "n/a"
+        else:
+            pct_text = f"{'+' if pct >= 0 else '−'}{abs(pct):.1f}%"
+        return f"{current_text}  ({delta_text}, {pct_text})"
 
     def _bind_legend_toggle(self, legend, lines):
         if legend is None:
@@ -4010,9 +4132,18 @@ class PayrollProcessorGUI:
         self._build_kpi_card(cards_frame, 1, "Employer Cost", self.dashboard_employer_cost_var)
         self._build_kpi_card(cards_frame, 2, "Total Insurance", self.dashboard_total_insurance_var)
         self._build_kpi_card(cards_frame, 3, "Employees", self.dashboard_employee_count_var)
+        self.dashboard_mom_net_var = tk.StringVar(value="—")
+        self.dashboard_mom_employer_cost_var = tk.StringVar(value="—")
+        self.dashboard_mom_insurance_var = tk.StringVar(value="—")
+        self.dashboard_mom_count_var = tk.StringVar(value="—")
+
         self._build_kpi_card(cards_frame, 0, "Unpaid (Last Month)", self.dashboard_unpaid_last_month_var, row=1)
         self._build_kpi_card(cards_frame, 1, "Unpaid (Current Month)", self.dashboard_unpaid_current_month_var, row=1)
         self._build_kpi_card(cards_frame, 2, "Unpaid (Current Year)", self.dashboard_unpaid_current_year_var, row=1)
+        self._build_kpi_card(cards_frame, 0, "Net Pay vs Last Month", self.dashboard_mom_net_var, row=2)
+        self._build_kpi_card(cards_frame, 1, "Employer Cost vs Last Month", self.dashboard_mom_employer_cost_var, row=2)
+        self._build_kpi_card(cards_frame, 2, "Insurance vs Last Month", self.dashboard_mom_insurance_var, row=2)
+        self._build_kpi_card(cards_frame, 3, "Employees vs Last Month", self.dashboard_mom_count_var, row=2)
 
         content_frame = ttk.Frame(self.dashboard_tab, style="App.TFrame")
         content_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
@@ -4122,6 +4253,40 @@ class PayrollProcessorGUI:
             self.dashboard_unpaid_current_month_var.set(self._format_currency(unpaid_current_month))
             self.dashboard_unpaid_current_year_var.set(self._format_currency(unpaid_current_year))
 
+            comparison = db_storage.fetch_period_comparison(
+                self.db_config,
+                year=today.year,
+                month=today.month,
+                document_type=document_type,
+                search=search or None,
+            )
+            self.dashboard_mom_net_var.set(
+                self._format_comparison(comparison.get("net_pay"))
+            )
+            self.dashboard_mom_employer_cost_var.set(
+                self._format_comparison(comparison.get("employer_cost"))
+            )
+            insurance_change = None
+            employee_ins = comparison.get("employee_insurance")
+            employer_ins = comparison.get("employer_insurance")
+            if employee_ins and employer_ins:
+                insurance_change = {
+                    "current": employee_ins["current"] + employer_ins["current"],
+                    "previous": employee_ins["previous"] + employer_ins["previous"],
+                }
+                insurance_change["delta"] = (
+                    insurance_change["current"] - insurance_change["previous"]
+                )
+                insurance_change["pct_change"] = (
+                    insurance_change["delta"] / insurance_change["previous"] * 100.0
+                    if insurance_change["previous"]
+                    else None
+                )
+            self.dashboard_mom_insurance_var.set(self._format_comparison(insurance_change))
+            self.dashboard_mom_count_var.set(
+                self._format_comparison(comparison.get("employee_count"), as_currency=False)
+            )
+
             monthly_rows = db_storage.fetch_monthly_summary(
                 self.db_config,
                 start_date=start_date,
@@ -4139,8 +4304,16 @@ class PayrollProcessorGUI:
                 search=search or None,
                 limit=20,
             )
+            jump_rows = self._fetch_jump_alerts(
+                start_date=start_date,
+                end_date=end_date,
+                document_type=document_type,
+                search=search or None,
+            )
             self._reset_treeview(self.dashboard_anomaly_tree, anomaly_columns)
-            self._populate_treeview(self.dashboard_anomaly_tree, anomaly_rows)
+            self._populate_treeview(
+                self.dashboard_anomaly_tree, jump_rows + list(anomaly_rows)
+            )
 
             recent_columns, recent_rows = db_storage.fetch_recent_entries(
                 self.db_config,
@@ -5035,7 +5208,81 @@ class PayrollProcessorGUI:
         if dest_path.exists():
             return None
         shutil.copy2(pdf_path, dest_path)
+        self._apply_signed_flags(doc_type, employee, date)
         return str(dest_path)
+
+    def _fetch_jump_alerts(self, start_date=None, end_date=None, document_type=None, search=None):
+        """Return month-over-month jumps shaped like the anomaly alert rows.
+
+        fetch_entry_jumps returns its own column set, so rows are reshaped to
+        (alert, employee, date, document_type, net_pay, total_insurance) to sit
+        in the same alerts table. Insurance is blank because a jump is measured
+        on net pay alone.
+        """
+        try:
+            _columns, rows = db_storage.fetch_entry_jumps(
+                self.db_config,
+                start_date=start_date,
+                end_date=end_date,
+                document_type=document_type,
+                search=search,
+                limit=20,
+            )
+        except Exception:
+            return []
+        alerts = []
+        for row in rows:
+            employee_name, _code, doc_type, period, _prev, net_pay, _delta, pct = row
+            direction = "▲" if (pct or 0) >= 0 else "▼"
+            alerts.append(
+                (
+                    f"Sudden Jump {direction} {abs(float(pct or 0)):.0f}%",
+                    employee_name,
+                    period,
+                    doc_type,
+                    net_pay,
+                    "",
+                )
+            )
+        return alerts
+
+    def _signed_flags_for_doc_type(self, doc_type: str):
+        """Map a signed document type to (signed_employer, signed_employee).
+
+        Government filings are made by the employer, so they only evidence the
+        employer side. A document explicitly marked as signatures evidences
+        both. None means "leave that flag alone".
+        """
+        # Case matters here. _classify_signed_doc returns "SIGNED" when the
+        # filename actually says so, but "Signed" as its fallback for anything
+        # it could not identify. Upper-casing first would conflate the two and
+        # flag every unrecognised PDF as fully signed.
+        if doc_type in {"ΥΠΟΓΡΑΦΕΣ", "SIGNED"}:
+            return True, True
+        if doc_type in {"E9", "ΠΡΟΣΛΗΨΗ", "ΕΝΤΥΠΟ3", "GOVGR"}:
+            return True, None
+        return None, None
+
+    def _apply_signed_flags(self, doc_type: str, employee: str, date) -> int:
+        """Flag the matching employee-month as signed, if we can identify one."""
+        if not self.db_config.get("enabled") or not employee or date is None:
+            return 0
+        signed_employer, signed_employee = self._signed_flags_for_doc_type(doc_type)
+        if signed_employer is None and signed_employee is None:
+            return 0
+        try:
+            return db_storage.mark_signed_for_period(
+                self.db_config,
+                employee_name=employee,
+                year=date.year,
+                month=date.month,
+                signed_employer=signed_employer,
+                signed_employee=signed_employee,
+                signed_date=date,
+            )
+        except Exception:
+            # Archiving must not fail because the database is unreachable.
+            return 0
 
     def _classify_signed_doc(self, pdf_path: str):
         name = Path(pdf_path).stem

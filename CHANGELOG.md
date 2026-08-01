@@ -4,11 +4,22 @@ All notable changes to this project are documented here. Newer entries go to the
 
 ## v3.1.4
 - Promoted v3.1.4 as active version and updated root launch/build scripts.
-- Added README.md and an MIT LICENSE; project engineered by PanLam.
+- Added README.md, CONTRIBUTING.md and an MIT LICENSE; project engineered by PanLam.
+- Added current-vs-last-month comparison KPIs (net pay, employer cost, insurance, employee count) to the dashboard.
+- Added signed_employer/signed_employee/signed_date columns with an automatic startup migration.
+- Added signed-flag updates by entry id and by employee month, with independent employer/employee sides.
+- Signed-document import now auto-flags the matching employee month; government filings evidence the employer side only.
+- Added a per-month signed / partially signed / unsigned summary.
+- Payment receipts are now merged into the employee's monthly payment PDFs after archiving.
+- Added "Employer Cost vs Net Pay" chart showing cost per euro of take-home pay.
+- Added "Headcount Trend" chart with joiners and leavers, using all-history first/last payment dates.
+- Added "Median vs Average Pay" chart with an interquartile band, aggregated per employee month.
+- Added sudden-jump detection comparing each employee against their own prior month, surfaced in dashboard alerts.
 - Added `tests/test_payroll_gui_helpers.py` covering the display-independent
   helpers on `PayrollProcessorGUI` (117 tests, no Tk root required).
-- Added `tests/test_db_storage_gaps.py` and `tests/test_db_storage_filters.py`;
-  `db_storage` coverage rose from 85% to 92% and the suite from 95 to 236 tests.
+- Added `tests/test_db_storage_gaps.py`, `tests/test_db_storage_filters.py` and
+  `tests/test_todo_features.py`; `db_storage` coverage rose from 85% to 92% and
+  the suite from 95 to 283 tests.
 - Fixed the coverage gate: `.coveragerc` pointed at a nonexistent `src`, so it
   reported 0% and failed despite a fully passing suite.
 - Fixed `bump_version.sh`: it recreated symlinked source directories instead of

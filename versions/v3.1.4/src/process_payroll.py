@@ -475,6 +475,62 @@ def _archive_pdf_for_receipt(archive_root: str, file_path: str, receipt: Dict[st
     return {"path": dest_path, "copied": copied}
 
 
+def find_monthly_payment_pdfs(archive_root: str, receipt: Dict[str, object]) -> List[str]:
+    """Return the archived payment PDFs for a receipt's employee and month.
+
+    Receipt archives live alongside the payment PDFs in
+    ``archive_root/YYYY/MM/Employee/``. Anything already carrying the receipt
+    suffix or document type is skipped so a receipt is never merged into
+    another receipt.
+    """
+    paid_date = receipt.get("paid_date")
+    if not paid_date:
+        return []
+    entry = {
+        "EmployeeName": receipt.get("employee_name"),
+        "EmployeeCode": None,
+        "Date": paid_date.strftime("%d/%m/%Y"),
+        "DocumentType": "Receipt",
+    }
+    archive_dir = _derive_archive_dir(archive_root, entry)
+    if not os.path.isdir(archive_dir):
+        return []
+    matches = []
+    for fname in sorted(os.listdir(archive_dir)):
+        if not fname.lower().endswith(".pdf"):
+            continue
+        lowered = fname.lower()
+        if "_receipt" in lowered or "receipt" in lowered:
+            continue
+        matches.append(os.path.join(archive_dir, fname))
+    return matches
+
+
+def merge_receipt_into_monthly_pdf(
+    archive_root: str,
+    receipt_path: str,
+    receipt: Dict[str, object],
+) -> Dict[str, object]:
+    """Append a payment receipt to that employee's monthly payment PDFs.
+
+    Returns ``{"merged": [...], "skipped": [...]}``. Merging needs poppler's
+    ``pdfunite``; without it every target lands in ``skipped`` and the receipt
+    remains archived as its own file, so nothing is lost either way.
+    """
+    result = {"merged": [], "skipped": []}
+    if not receipt_path or not os.path.exists(receipt_path):
+        return result
+    targets = find_monthly_payment_pdfs(archive_root, receipt)
+    for target in targets:
+        if os.path.abspath(target) == os.path.abspath(receipt_path):
+            continue
+        if _merge_pdf_files(target, receipt_path):
+            result["merged"].append(target)
+        else:
+            result["skipped"].append(target)
+    return result
+
+
 def _split_pdf_pages(file_path: str, temp_dir: str) -> List[str]:
     if not shutil.which("pdfseparate"):
         return []
@@ -632,7 +688,22 @@ def process_zip(zip_path: str, temp_root: str, archive_root: str = None):
                                 )
                                 archived_keys.add(key)
                 records.extend(slips)
+    # Merge receipts only after the walk, because a receipt is usually read
+    # before the payment PDFs it belongs to have been archived.
+    if archive_root:
+        _merge_receipts_after_archiving(archive_root, receipts)
     return pd.DataFrame(records), receipts, claims
+
+
+def _merge_receipts_after_archiving(archive_root: str, receipts: List[Dict[str, object]]) -> None:
+    """Append each archived receipt to its employee's monthly payment PDFs."""
+    for receipt in receipts:
+        receipt_path = receipt.get("archive_path")
+        if not receipt_path:
+            continue
+        outcome = merge_receipt_into_monthly_pdf(archive_root, receipt_path, receipt)
+        receipt["merged_into"] = outcome["merged"]
+        receipt["merge_skipped"] = outcome["skipped"]
 
 
 def process_pdf_file(pdf_path: str, temp_root: str, archive_root: str = None):
