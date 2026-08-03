@@ -2,6 +2,59 @@
 
 All notable changes to this project are documented here. Newer entries go to the top.
 
+## Unreleased — UI/UX pass (in `versions/v3.1.4`)
+
+**Notifications**
+- Added non-blocking toasts (bottom right, stacked, auto-dismissing, optional
+  action such as "Show in Finder") and moved every guidance, confirmation and
+  completion message onto them. Errors that need a decision are still dialogs.
+- Replaced the fifteen "Database Disabled" modal warnings: refreshing a view now
+  shows an inline panel with an "Open Database Settings…" button, and actions
+  that need storage raise a toast rather than a dialog per attempt.
+- Dropped the modal that fired on every edit-lock toggle; the existing lock
+  indicator and a toast carry it.
+
+**Charts**
+- All fourteen analytics charts plus the dashboard trend now follow the light /
+  dark theme: figure and axes backgrounds, grid, spines, tick and title colours,
+  legend frame. Previously every figure stayed white in dark mode.
+- Added a shared series palette in `theme_config`, euro-formatted axes
+  (`€ 1.2k`, `€ 3.4M`), percentage and day suffixes, `tight_layout` so rotated
+  month labels are no longer clipped, and a titled "no data" placeholder.
+- Grouped the fourteen chart tabs into five by question — Spend, Trends,
+  Insurance, Payments, Workforce — as cards in a grid, with an expand control
+  that fills the tab and reveals the matplotlib toolbar on demand.
+
+**Responsiveness**
+- Dashboard and analytics refreshes now run their queries on a worker thread and
+  render on the UI thread, with a generation counter so a superseded refresh is
+  discarded. Filter changes no longer freeze the window.
+- Only the visible chart group is drawn on refresh; the others are marked stale
+  and drawn when their tab is opened.
+- Quitting with auto backup on shows a progress sheet instead of freezing, and
+  "Run Backup Now" runs in the background.
+
+**Navigation and layout**
+- Filter bar grouped into Period / Document / Search, with the applied filters
+  shown as removable chips, a "Clear all" button, and a search group that wraps
+  to its own line at narrow widths.
+- Sidebar gained a filled active state and ⌘1–⌘8 shortcuts.
+- Settings scrolls, so the Backups and Appearance groups are reachable at the
+  900×600 minimum window size.
+- Month-over-month KPI cards split into a large value and a delta line coloured
+  by direction.
+- Processing view rebuilt: left-aligned header, a setup banner for missing
+  dependencies or disabled storage, a file counter, and a collapsible live log.
+- Defined `Accent.TButton` (it was referenced but never configured, so the
+  primary action looked like every other button) and `Danger.TButton` for
+  "Delete All Data…".
+- Appearance changes now repaint the listbox, log pane, lock canvas, settings
+  canvas and figures instead of leaving a half-themed window until restart.
+- Fixed the Processing header reading "Payment Processor" and removed the
+  leftover `DEBUG:` prints from the file and report actions.
+- Made `_find_pg_tool`'s two tests hermetic; they searched the real
+  `/Library/PostgreSQL` and failed on any machine with PostgreSQL installed.
+
 ## v3.1.4
 - Promoted v3.1.4 as active version and updated root launch/build scripts.
 - Added README.md, CONTRIBUTING.md and an MIT LICENSE; project engineered by PanLam.
