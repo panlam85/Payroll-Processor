@@ -12,3 +12,5 @@ __pycache__/
 *.swp
 .coverage
 .pytest_cache/
+.venv-embed/
+.venv-cache/
