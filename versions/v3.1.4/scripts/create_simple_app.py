@@ -451,6 +451,26 @@ def _normalize_framework_layout(framework: Path) -> None:
             continue
         if (versions / "Current" / name).exists():
             link.symlink_to(Path("Versions") / "Current" / name)
+    # Homebrew points lib/pythonX.Y/site-packages at its own prefix, so the copy
+    # inside the bundle dangles. A dangling link both breaks `codesign --deep
+    # --strict` ("No such file or directory") and leaves the app referring to a
+    # path off the machine. The embedded venv supplies site-packages, so an empty
+    # directory is a safe stand-in; anything else dangling is simply dropped.
+    pruned = 0
+    for link in framework.rglob("*"):
+        if not link.is_symlink() or link.exists():
+            continue
+        try:
+            if link.name == "site-packages":
+                link.unlink()
+                link.mkdir()
+            else:
+                link.unlink()
+            pruned += 1
+        except OSError:
+            continue
+    if pruned:
+        print(f"🧹 Pruned {pruned} dangling symlink(s) from the bundled framework.")
     print("🔗 Normalized Python.framework layout (Versions/Current + aliases).")
 
 
@@ -586,12 +606,14 @@ def _sign_embedded_code(app_path: Path) -> None:
     supported way to do this.
     """
     resources = app_path / "Contents" / "Resources"
-    if not resources.exists():
+    frameworks = app_path / "Contents" / "Frameworks"
+    roots = [p for p in (resources, frameworks) if p.exists()]
+    if not roots:
         return
     macho = []
     nested_bundles = []
     seen = set()
-    for candidate in resources.rglob("*"):
+    for candidate in [c for root in roots for c in root.rglob("*")]:
         try:
             real = candidate.resolve()
         except Exception:
@@ -608,9 +630,9 @@ def _sign_embedded_code(app_path: Path) -> None:
         _codesign_target(target)
     for target in sorted(nested_bundles, key=lambda p: len(p.parts), reverse=True):
         _codesign_target(target)
-    framework = resources / "Python.framework"
-    if framework.exists():
-        _codesign_target(framework)
+    for framework in (frameworks / "Python.framework", resources / "Python.framework"):
+        if framework.exists():
+            _codesign_target(framework)
     print(f"🔏 Signed {len(macho)} embedded binaries and {len(nested_bundles)} nested bundles.")
 
 
@@ -831,9 +853,18 @@ def create_simple_app():
         embedded_python = (resources_dir / "venv" / "bin" / "python")
     framework_path = find_python_framework(embedded_python)
     if framework_path:
-        bundled_framework = resources_dir / "Python.framework"
+        # Nested code belongs in Contents/Frameworks. Under Contents/Resources
+        # codesign seals the framework as a resource rather than as code, so the
+        # bundle signature never validates ("a sealed resource is missing or
+        # invalid") even though every binary inside it is correctly signed.
+        frameworks_dir = app_path / "Contents" / "Frameworks"
+        frameworks_dir.mkdir(parents=True, exist_ok=True)
+        bundled_framework = frameworks_dir / "Python.framework"
         if bundled_framework.exists():
             shutil.rmtree(bundled_framework)
+        legacy_framework = resources_dir / "Python.framework"
+        if legacy_framework.exists():
+            shutil.rmtree(legacy_framework)
         print(f"📦 Bundling Python.framework from {framework_path}...")
         ditto_bin = shutil.which("ditto")
         if ditto_bin:
@@ -971,7 +1002,13 @@ if [ -x "$EMBED_BIN/pdftotext" ]; then
     fi
 fi
 
-if [ -d "$RESOURCES_DIR/Python.framework" ]; then
+# Contents/Frameworks is where the framework now lives; the Resources path is
+# kept as a fallback so an older bundle layout still launches.
+FRAMEWORKS_DIR="$SCRIPT_DIR/../Frameworks"
+if [ -d "$FRAMEWORKS_DIR/Python.framework" ]; then
+    PY_FRAMEWORK="$FRAMEWORKS_DIR/Python.framework/Versions/Current"
+    export DYLD_LIBRARY_PATH="$PY_FRAMEWORK:$DYLD_LIBRARY_PATH"
+elif [ -d "$RESOURCES_DIR/Python.framework" ]; then
     PY_FRAMEWORK="$RESOURCES_DIR/Python.framework/Versions/Current"
     export DYLD_LIBRARY_PATH="$PY_FRAMEWORK:$DYLD_LIBRARY_PATH"
 fi
