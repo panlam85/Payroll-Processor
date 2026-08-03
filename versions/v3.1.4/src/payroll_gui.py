@@ -136,14 +136,47 @@ class Tooltip:
                 return
         except (tk.TclError, KeyError):
             return
-        x = self.widget.winfo_rootx() + 12
-        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 8
+        # Anchor to the pointer, not to the widget. Anchoring under the widget
+        # dropped the tip squarely on top of the next control in the sidebar,
+        # which read as a rendering fault rather than a hint.
+        try:
+            px, py = self.widget.winfo_pointerxy()
+        except tk.TclError:
+            return
+        x, y = px + 14, py + 22
         try:
             self.tipwindow = tw = tk.Toplevel(self.widget)
             tw.wm_overrideredirect(True)
+            try:
+                # Keep it above the window without stealing focus.
+                tw.wm_attributes("-topmost", True)
+            except tk.TclError:
+                pass
+            # Plain tk widgets, not ttk: aqua ignores ttk background, which is
+            # what made the tip a flat white pill with no edges.
+            frame = tk.Frame(tw, background="#2B2D31", highlightthickness=0, bd=0)
+            frame.pack(fill=tk.BOTH, expand=True)
+            label = tk.Label(
+                frame,
+                text=self.text,
+                background="#2B2D31",
+                foreground="#F5F5F7",
+                font=("SF Pro Text", 11),
+                padx=8,
+                pady=4,
+                justify=tk.LEFT,
+            )
+            label.pack()
+            tw.update_idletasks()
+            # Keep it on screen when hovering near an edge.
+            width, height = tw.winfo_reqwidth(), tw.winfo_reqheight()
+            screen_w = tw.winfo_screenwidth()
+            screen_h = tw.winfo_screenheight()
+            if x + width > screen_w - 8:
+                x = max(8, screen_w - width - 8)
+            if y + height > screen_h - 8:
+                y = max(8, py - height - 12)
             tw.wm_geometry(f"+{x}+{y}")
-            label = ttk.Label(tw, text=self.text, style="Body.TLabel")
-            label.pack(ipadx=6, ipady=3)
         except tk.TclError:
             self.tipwindow = None
             return
@@ -156,7 +189,7 @@ class Tooltip:
             previous._hide()
         Tooltip._visible = self
         try:
-            self._auto_hide_id = self.widget.after(400, self._poll_pointer)
+            self._auto_hide_id = self.widget.after(150, self._poll_pointer)
         except tk.TclError:
             self._auto_hide_id = None
 
@@ -184,7 +217,7 @@ class Tooltip:
             self._hide()
             return
         try:
-            self._auto_hide_id = self.widget.after(400, self._poll_pointer)
+            self._auto_hide_id = self.widget.after(150, self._poll_pointer)
         except tk.TclError:
             self._auto_hide_id = None
 

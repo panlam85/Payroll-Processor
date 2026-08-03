@@ -424,6 +424,28 @@ def relink_bundle_python_refs(search_roots, bundled_framework: Path, version: st
     return changed
 
 
+def _brand_framework_python_app(framework: Path, app_name: str) -> None:
+    """Rename the framework's nested Python.app so the menu bar reads correctly.
+
+    The launcher executes Python.framework/.../Resources/Python.app, and macOS
+    takes the application menu title from the Info.plist of whichever bundle owns
+    the running executable - so the menu said "Python" no matter what the outer
+    bundle or tk appname claimed. This copy of the framework is private to the
+    app, so renaming it here is safe and does not touch the system Python.
+    """
+    for plist_path in framework.rglob("Python.app/Contents/Info.plist"):
+        try:
+            with open(plist_path, "rb") as handle:
+                data = plistlib.load(handle)
+            data["CFBundleName"] = app_name
+            data["CFBundleDisplayName"] = app_name
+            with open(plist_path, "wb") as handle:
+                plistlib.dump(data, handle)
+            print(f"🏷️  Renamed nested Python.app to '{app_name}' for the menu bar.")
+        except Exception as exc:
+            print(f"⚠️  Could not rebrand {plist_path}: {exc}")
+
+
 def _normalize_framework_layout(framework: Path) -> None:
     """Add the symlinks macOS expects of a versioned framework bundle.
 
@@ -872,6 +894,7 @@ def create_simple_app():
         else:
             shutil.copytree(framework_path, bundled_framework, symlinks=True)
         _normalize_framework_layout(bundled_framework)
+        _brand_framework_python_app(bundled_framework, "Payroll Processor")
         python_bins = [
             resources_dir / "venv" / "bin" / "python",
             resources_dir / "venv-arm64" / "bin" / "python",
