@@ -14,7 +14,19 @@ from pathlib import Path
 from typing import Optional
 import sysconfig
 
-APP_VERSION = "3.1.3"
+def _detect_app_version(default: str = "3.1.4") -> str:
+    """Derive the version from the versions/vX.Y.Z directory holding this script.
+
+    A hardcoded literal here drifted to 3.1.3 while the tree moved to 3.1.4, so
+    the bundle advertised the wrong version in its Info.plist and About dialog.
+    """
+    name = Path(__file__).resolve().parent.parent.name
+    if name.startswith("v") and all(part.isdigit() for part in name[1:].split(".")):
+        return name[1:]
+    return default
+
+
+APP_VERSION = _detect_app_version()
 APP_VERSION_SHORT = APP_VERSION.rsplit(".", 1)[0] if "." in APP_VERSION else APP_VERSION
 
 SCRIPT_PATH = Path(__file__).resolve()
@@ -29,6 +41,84 @@ DIST_DIR = REPO_ROOT / "dist"
 VENV_EMBED_DIR = VERSION_DIR / ".venv-embed"
 ARCH_BIN = shutil.which("arch")
 LIPO_BIN = shutil.which("lipo")
+
+BUILD_PYTHON_ENV = "PAYROLL_BUILD_PYTHON"
+_BASE_PYTHON: Optional[str] = None
+
+BUILD_PYTHON_HELP = f"""No usable Python found for building the app bundle.
+
+The embedded venv must be created with --copies so the .app is self-contained.
+Apple's stub python3 (the one shipped with Xcode / Command Line Tools) refuses:
+    "This build of python cannot create venvs without using symlinks"
+and its framework lives inside Xcode.app, so a symlinked venv would break on
+any other machine anyway.
+
+Install a real Python, then re-run this script:
+  * python.org universal2 installer (best - builds arm64 + x86_64 in one .app):
+        https://www.python.org/downloads/macos/
+  * or Homebrew (single-arch build only):
+        brew install python@3.12
+
+Or point the build at a specific interpreter:
+        {BUILD_PYTHON_ENV}=/path/to/python3 ./create_simple_app.py
+"""
+
+
+class BuildPythonError(RuntimeError):
+    """Raised when no interpreter capable of building the bundle is available."""
+
+
+def _supports_copies(python_bin: str) -> bool:
+    """Check whether this interpreter can create a venv with real binaries."""
+    with tempfile.TemporaryDirectory() as tmp:
+        probe = Path(tmp) / "probe"
+        try:
+            subprocess.check_call(
+                [python_bin, "-m", "venv", "--copies", "--without-pip", str(probe)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.CalledProcessError):
+            return False
+    return True
+
+
+def _base_python_candidates():
+    override = os.environ.get(BUILD_PYTHON_ENV, "").strip()
+    if override:
+        return [override]
+    candidates = []
+    for version in ("3.13", "3.12", "3.11", "3.10"):
+        candidates.append(f"/Library/Frameworks/Python.framework/Versions/{version}/bin/python3")
+        # Homebrew ships only the versioned name (python3.12) in its opt prefix -
+        # there is no bare python3 there, so check both spellings.
+        candidates.append(f"/opt/homebrew/opt/python@{version}/bin/python{version}")
+        candidates.append(f"/opt/homebrew/opt/python@{version}/bin/python3")
+        candidates.append(f"/usr/local/opt/python@{version}/bin/python{version}")
+        candidates.append(f"/usr/local/opt/python@{version}/bin/python3")
+    path_python = shutil.which("python3")
+    if path_python:
+        candidates.append(path_python)
+    return candidates
+
+
+def base_python() -> str:
+    """Pick an interpreter that can build a self-contained embedded venv."""
+    global _BASE_PYTHON
+    if _BASE_PYTHON:
+        return _BASE_PYTHON
+    seen = []
+    for candidate in _base_python_candidates():
+        resolved = shutil.which(candidate) or (candidate if os.path.isfile(candidate) else None)
+        if not resolved or resolved in seen:
+            continue
+        seen.append(resolved)
+        if _supports_copies(resolved):
+            _BASE_PYTHON = resolved
+            print(f"🐍 Using base Python: {resolved}")
+            return resolved
+        print(f"⚠️  {resolved} cannot create self-contained venvs (--copies unsupported); skipping.")
+    raise BuildPythonError(BUILD_PYTHON_HELP)
 
 
 def _venv_dir_for_arch(target_arch: Optional[str]) -> Path:
@@ -45,9 +135,10 @@ def _run_python(python_bin: Path, args, target_arch: Optional[str] = None) -> No
 
 
 def _create_venv(venv_dir: Path, target_arch: Optional[str]) -> None:
-    python_cmd = ["python3", "-m", "venv", "--copies", str(venv_dir)]
+    python_bin = base_python()
+    python_cmd = [python_bin, "-m", "venv", "--copies", str(venv_dir)]
     if target_arch and ARCH_BIN:
-        python_cmd = [ARCH_BIN, f"-{target_arch}", "python3", "-m", "venv", "--copies", str(venv_dir)]
+        python_cmd = [ARCH_BIN, f"-{target_arch}", python_bin, "-m", "venv", "--copies", str(venv_dir)]
     subprocess.check_call(python_cmd)
 
 
@@ -193,16 +284,38 @@ def find_python_framework(python_bin: Path) -> Optional[Path]:
     return None
 
 def _python_framework_version(python_bin: Path) -> str:
-    version = sysconfig.get_config_var("VERSION") or ""
-    if not version:
-        try:
-            version = subprocess.check_output(
-                [str(python_bin), "-c", "import sysconfig; print(sysconfig.get_config_var('VERSION') or '')"],
-                text=True,
-            ).strip()
-        except Exception:
-            version = ""
+    # Ask the *embedded* interpreter, not the one running this script. The build
+    # script may run under a different Python (e.g. Apple's 3.9 via the shebang)
+    # than the one being bundled, and a wrong version here silently breaks the
+    # relink filter and makes the verification pass without checking anything.
+    try:
+        version = subprocess.check_output(
+            [str(python_bin), "-c", "import sysconfig; print(sysconfig.get_config_var('VERSION') or '')"],
+            text=True,
+        ).strip()
+    except Exception:
+        version = ""
+    # Deliberately no fallback to this script's own sysconfig: the build may run
+    # under a different Python, and a wrong version silently relinks the bundle
+    # to a framework directory that does not exist. Empty means "unknown".
     return version
+
+
+def _framework_version_from_path(framework: Path) -> str:
+    """Read the version from a framework's Versions/ directory.
+
+    Preferred over probing the embedded interpreter, which becomes unrunnable
+    the moment install_name_tool invalidates its signature on Apple Silicon.
+    """
+    versions = framework / "Versions"
+    if not versions.is_dir():
+        return ""
+    names = [
+        p.name
+        for p in versions.iterdir()
+        if p.is_dir() and p.name != "Current" and p.name[:1].isdigit()
+    ]
+    return sorted(names)[-1] if names else ""
 
 
 def _relink_binary(binary: Path, old_path: Path, target_python: Path) -> bool:
@@ -218,12 +331,144 @@ def _relink_binary(binary: Path, old_path: Path, target_python: Path) -> bool:
         return False
 
 
+def _is_macho(path: Path) -> bool:
+    try:
+        with open(path, "rb") as handle:
+            magic = handle.read(4)
+    except Exception:
+        return False
+    # thin little/big endian, 64-bit, and universal (fat) magics
+    return magic in {
+        b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe",
+        b"\xfe\xed\xfa\xcf", b"\xfe\xed\xfa\xce",
+        b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca",
+    }
+
+
+def relink_bundle_python_refs(search_roots, bundled_framework: Path, version: str) -> int:
+    """Point every Mach-O in the bundle at the embedded framework.
+
+    A --copies venv contains several real python binaries (python, python3,
+    python3.X), not just one, and the framework dylib carries its own absolute
+    install name. Relinking a hardcoded subset leaves the rest tied to the build
+    machine, so walk everything and rewrite any absolute Python.framework
+    reference. Returns the number of binaries changed.
+    """
+    install_tool = shutil.which("install_name_tool")
+    otool = shutil.which("otool")
+    if not install_tool or not otool:
+        print("⚠️  install_name_tool/otool not available; skipping bundle relink.")
+        return 0
+    target_python = bundled_framework / "Versions" / version / "Python"
+    changed = 0
+    seen = set()
+    for root in search_roots:
+        if not root.exists():
+            continue
+        for candidate in root.rglob("*"):
+            # Resolve first and dedupe by real path: the same dylib is reachable
+            # via Versions/Current and via Versions/<X.Y>, and skipping anything
+            # symlinked would drop it entirely depending on which the walk sees.
+            try:
+                path = candidate.resolve()
+            except Exception:
+                continue
+            if path in seen:
+                continue
+            seen.add(path)
+            if not path.is_file() or not _is_macho(path):
+                continue
+            try:
+                output = subprocess.check_output([otool, "-L", str(path)], text=True)
+            except Exception:
+                continue
+            lines = output.splitlines()
+            rel = os.path.relpath(target_python, path.parent)
+            new_path = f"@loader_path/{rel}"
+            edits = []
+            # The framework dylib carries its own absolute install name, which
+            # -change cannot touch; it needs -id. Decide by identity rather than
+            # by line position, which is not reliable across otool output shapes.
+            try:
+                is_framework_dylib = path.resolve() == target_python.resolve()
+            except Exception:
+                is_framework_dylib = False
+            if is_framework_dylib:
+                edits.append(["-id", new_path])
+            for line in lines[1:]:
+                dep = line.strip().split(" ", 1)[0]
+                if not dep.startswith("/") or "Python.framework" not in dep:
+                    continue
+                edits.append(["-change", dep, new_path])
+            if not edits:
+                continue
+            ok = False
+            for edit in edits:
+                try:
+                    subprocess.check_call(
+                        [install_tool, *edit, str(path)],
+                        stderr=subprocess.DEVNULL,
+                    )
+                    ok = True
+                except Exception:
+                    continue
+            if ok:
+                # Re-sign immediately: install_name_tool invalidates the code
+                # signature, and arm64 refuses to execute a binary whose
+                # signature does not match. Without this the embedded Python is
+                # silently unrunnable.
+                _codesign_target(path)
+                changed += 1
+    if changed:
+        print(f"🔗 Relinked and re-signed {changed} bundled binaries.")
+    return changed
+
+
+def _normalize_framework_layout(framework: Path) -> None:
+    """Add the symlinks macOS expects of a versioned framework bundle.
+
+    Homebrew's Python.framework ships only Versions/<X.Y> - no Versions/Current
+    and no top-level Python/Resources aliases. codesign rejects that layout with
+    "bundle format unrecognized, invalid, or unsuitable", so recreate the
+    canonical links before signing. python.org frameworks already have them and
+    are left untouched.
+    """
+    versions = framework / "Versions"
+    if not versions.is_dir():
+        return
+    concrete = sorted(
+        (p for p in versions.iterdir() if p.is_dir() and not p.is_symlink() and p.name != "Current"),
+        key=lambda p: p.name,
+    )
+    if not concrete:
+        return
+    current = versions / "Current"
+    if not current.exists() and not current.is_symlink():
+        current.symlink_to(concrete[-1].name)
+    for name in ("Python", "Resources", "Headers"):
+        link = framework / name
+        if link.exists() or link.is_symlink():
+            continue
+        if (versions / "Current" / name).exists():
+            link.symlink_to(Path("Versions") / "Current" / name)
+    print("🔗 Normalized Python.framework layout (Versions/Current + aliases).")
+
+
 def _verify_python_framework_links(binaries, framework_prefix: str) -> bool:
+    """Fail if any binary still loads Python.framework from outside the bundle.
+
+    Checking one hardcoded prefix is not enough: a build from Homebrew (or any
+    non-system Python) references a different absolute path, so a prefix-only
+    check passes while the bundle is still tied to this machine. Any absolute
+    Python.framework dependency is disqualifying - inside the bundle the load
+    path must be @executable_path/@loader_path/@rpath relative.
+    """
     otool = shutil.which("otool")
     if not otool:
         print("⚠️  otool not available; skipping framework link verification.")
         return True
-    bad = []
+    bad = {}
+    checked = 0
     for binary in binaries:
         if not binary.exists():
             continue
@@ -231,16 +476,25 @@ def _verify_python_framework_links(binaries, framework_prefix: str) -> bool:
             output = subprocess.check_output([otool, "-L", str(binary)], text=True)
         except Exception:
             continue
-        for line in output.splitlines():
-            if framework_prefix in line:
-                bad.append(binary)
-                break
+        checked += 1
+        for line in output.splitlines()[1:]:
+            dep = line.strip().split(" ", 1)[0]
+            if not dep.startswith("/"):
+                continue
+            if framework_prefix in dep or "Python.framework" in dep:
+                bad.setdefault(binary, []).append(dep)
     if bad:
-        print("⚠️  Detected Python framework links to system path:")
-        for binary in bad:
-            print(f"   - {binary}")
+        print("⚠️  Detected Python framework links outside the bundle:")
+        for binary, deps in bad.items():
+            for dep in deps:
+                print(f"   - {binary}: {dep}")
         return False
-    print("✅ Verified bundled Python framework links.")
+    if not checked:
+        # Nothing was inspected, so nothing was proven. Treat as a failure rather
+        # than printing a checkmark that means only "no binaries were found".
+        print("⚠️  No Python binaries were available to verify; cannot confirm self-containment.")
+        return False
+    print(f"✅ Verified bundled Python framework links ({checked} binaries checked).")
     return True
 
 
@@ -321,6 +575,44 @@ def _codesign_bundle(target: Path) -> None:
         subprocess.check_call([codesign, "--force", "--deep", "--sign", "-", str(target)])
     except Exception as exc:
         print(f"⚠️  Failed to codesign bundle {target}: {exc}")
+
+def _sign_embedded_code(app_path: Path) -> None:
+    """Sign every embedded binary, deepest first, after all mutation is done.
+
+    codesign --deep does not reliably reach nested bundles (Apple deprecates it
+    for signing), which left the framework's inner Python.app unsigned after
+    install_name_tool had rewritten it. macOS then killed the process with
+    CODESIGNING / Invalid Page. Signing explicitly, innermost outwards, is the
+    supported way to do this.
+    """
+    resources = app_path / "Contents" / "Resources"
+    if not resources.exists():
+        return
+    macho = []
+    nested_bundles = []
+    seen = set()
+    for candidate in resources.rglob("*"):
+        try:
+            real = candidate.resolve()
+        except Exception:
+            continue
+        if real in seen:
+            continue
+        seen.add(real)
+        if real.is_dir() and real.suffix == ".app":
+            nested_bundles.append(real)
+        elif real.is_file() and _is_macho(real):
+            macho.append(real)
+    # Deepest paths first so a container is never signed before its contents.
+    for target in sorted(macho, key=lambda p: len(p.parts), reverse=True):
+        _codesign_target(target)
+    for target in sorted(nested_bundles, key=lambda p: len(p.parts), reverse=True):
+        _codesign_target(target)
+    framework = resources / "Python.framework"
+    if framework.exists():
+        _codesign_target(framework)
+    print(f"🔏 Signed {len(macho)} embedded binaries and {len(nested_bundles)} nested bundles.")
+
 
 def _strip_resource_forks_with_ditto(app_path: Path) -> None:
     ditto_bin = shutil.which("ditto")
@@ -504,8 +796,11 @@ def create_simple_app():
         print("⚡ Slim venv mode enabled (PAYROLL_SLIM_VENV=1)")
 
     venvs_to_embed = []
+    try:
+        python3_path = base_python()
+    except BuildPythonError as exc:
+        raise SystemExit(f"❌ {exc}") from None
     if ARCH_BIN and LIPO_BIN:
-        python3_path = shutil.which("python3") or "python3"
         lipo_info = ""
         try:
             lipo_info = subprocess.check_output([LIPO_BIN, "-info", python3_path], text=True).strip()
@@ -545,27 +840,49 @@ def create_simple_app():
             subprocess.check_call([ditto_bin, "--norsrc", str(framework_path), str(bundled_framework)])
         else:
             shutil.copytree(framework_path, bundled_framework, symlinks=True)
+        _normalize_framework_layout(bundled_framework)
         python_bins = [
             resources_dir / "venv" / "bin" / "python",
             resources_dir / "venv-arm64" / "bin" / "python",
             resources_dir / "venv-x86_64" / "bin" / "python",
         ]
+        # Resolve the version BEFORE relinking. Afterwards the embedded
+        # interpreter cannot be executed (install_name_tool breaks its
+        # signature), so probing it would fail and yield a wrong version.
+        version = _framework_version_from_path(framework_path) or _python_framework_version(embedded_python)
+        if not version:
+            raise RuntimeError(f"Could not determine Python framework version from {framework_path}")
         patch_python_framework_links(python_bins, framework_path, bundled_framework)
-        version = _python_framework_version(embedded_python)
-        verify_bins = list(python_bins)
+        # Sweep every Mach-O in the bundle. The list above misses the sibling
+        # python3/python3.X copies and the framework's own install name, each of
+        # which would keep the app bound to this build machine.
+        relink_roots = [
+            resources_dir / "venv",
+            resources_dir / "venv-arm64",
+            resources_dir / "venv-x86_64",
+            bundled_framework,
+        ]
         if version:
-            verify_bins.extend(
-                [
-                    bundled_framework / "Versions" / version / "Resources" / "Python.app" / "Contents" / "MacOS" / "Python",
-                    bundled_framework / "Versions" / version / "bin" / "python",
-                    bundled_framework / "Versions" / version / "bin" / "python3",
-                    bundled_framework / "Versions" / version / "bin" / f"python{version}",
-                ]
-            )
-            verify_bins.extend(_iter_executables(bundled_framework / "Versions" / version / "Resources" / "Python.app"))
-            verify_bins.extend(_iter_executables(bundled_framework / "Versions" / version / "bin"))
+            relink_bundle_python_refs(relink_roots, bundled_framework, version)
+        # Verify against the same exhaustive set, so a pass means the whole
+        # bundle was inspected rather than one hand-picked binary.
+        verify_bins = []
+        _seen_verify = set()
+        for root in relink_roots:
+            if not root.exists():
+                continue
+            for candidate in root.rglob("*"):
+                try:
+                    real = candidate.resolve()
+                except Exception:
+                    continue
+                if real in _seen_verify:
+                    continue
+                _seen_verify.add(real)
+                if real.is_file() and _is_macho(real):
+                    verify_bins.append(real)
         if not _verify_python_framework_links(verify_bins, "/Library/Frameworks/Python.framework"):
-            raise RuntimeError("Embedded Python still references system Python.framework")
+            raise RuntimeError("Embedded Python still references an external Python.framework")
 
         _codesign_bundle(bundled_framework)
     else:
@@ -693,18 +1010,13 @@ fi
     _sanitize_bundle(app_path)
     _strip_resource_forks_with_ditto(app_path)
     _sanitize_bundle(app_path)
-    for rel_path in (
-        "Contents/Resources/venv/bin/python",
-        "Contents/Resources/venv-arm64/bin/python",
-        "Contents/Resources/venv-x86_64/bin/python",
-    ):
-        _codesign_target(app_path / rel_path)
-    if (app_path / "Contents" / "Resources" / "Python.framework").exists():
-        _codesign_bundle(app_path / "Contents" / "Resources" / "Python.framework")
+    _sign_embedded_code(app_path)
 
     # Sign app bundle (ad-hoc by default, or Developer ID if provided)
     sign_identity = os.environ.get("APPLE_CODESIGN_ID", "-")
-    sign_cmd = ["codesign", "--force", "--deep", "--sign", sign_identity]
+    # No --deep: the embedded code is already signed inside-out above, and --deep
+    # is both deprecated for signing and unreliable for nested bundles.
+    sign_cmd = ["codesign", "--force", "--sign", sign_identity]
     if sign_identity != "-":
         sign_cmd += ["--options", "runtime", "--timestamp"]
     sign_cmd.append(str(app_path))

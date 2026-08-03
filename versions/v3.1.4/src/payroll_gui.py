@@ -63,8 +63,37 @@ import db_storage
 DEFAULT_REPORT_DIR = Path.home() / "Documents" / "Payroll Processor Reports"
 
 
+def _detect_app_version(default: str = "3.1.4") -> str:
+    """Read the version from the versions/vX.Y.Z directory this file lives in.
+
+    The About dialog reported 3.1.3 from inside a 3.1.4 tree because the string
+    was hardcoded in two places and only one got bumped. Deriving it keeps the
+    two in step; the default covers the app bundle, where src/ is flattened into
+    Contents/Resources and the version directory is no longer in the path.
+    """
+    try:
+        name = Path(__file__).resolve().parent.parent.name
+        if name.startswith("v") and all(part.isdigit() for part in name[1:].split(".")):
+            return name[1:]
+    except Exception:
+        pass
+    return default
+
+
+APP_VERSION = _detect_app_version()
+
+
 class Tooltip:
-    """Simple tooltip helper for tkinter widgets."""
+    """Simple tooltip helper for tkinter widgets.
+
+    Tooltips kept surviving their trigger: <Leave> is not delivered when a
+    sidebar button is restyled on a view change, when the pointer jumps out of
+    the window fast, or when focus moves to another app. Rather than chase every
+    such event, the visible tip polls for the pointer and retires itself, and
+    only one tip is ever on screen at a time.
+    """
+
+    _visible = None  # the single tooltip currently shown, if any
 
     def __init__(self, widget, text, delay=500):
         self.widget = widget
@@ -72,9 +101,14 @@ class Tooltip:
         self.delay = delay
         self.tipwindow = None
         self._after_id = None
+        self._auto_hide_id = None
         widget.bind("<Enter>", self._schedule, add="+")
         widget.bind("<Leave>", self._hide, add="+")
         widget.bind("<ButtonPress>", self._hide, add="+")
+        # Switching views can move focus or tear the widget down without ever
+        # delivering <Leave>, which left a tooltip floating over the sidebar.
+        widget.bind("<Destroy>", self._hide, add="+")
+        widget.bind("<FocusOut>", self._hide, add="+")
 
     def _schedule(self, _event=None):
         self._cancel()
@@ -91,19 +125,85 @@ class Tooltip:
     def _show(self):
         if self.tipwindow or not self.text:
             return
+        # Only show if the pointer is genuinely still over this widget. Restyling
+        # a sidebar button on view change does not deliver <Leave>, so a tip
+        # scheduled just before the switch could otherwise appear over the new
+        # view and stay there with nothing left to dismiss it.
+        try:
+            px, py = self.widget.winfo_pointerxy()
+            under = self.widget.winfo_containing(px, py)
+            if under is not self.widget:
+                return
+        except (tk.TclError, KeyError):
+            return
         x = self.widget.winfo_rootx() + 12
         y = self.widget.winfo_rooty() + self.widget.winfo_height() + 8
-        self.tipwindow = tw = tk.Toplevel(self.widget)
-        tw.wm_overrideredirect(True)
-        tw.wm_geometry(f"+{x}+{y}")
-        label = ttk.Label(tw, text=self.text, style="Body.TLabel")
-        label.pack(ipadx=6, ipady=3)
+        try:
+            self.tipwindow = tw = tk.Toplevel(self.widget)
+            tw.wm_overrideredirect(True)
+            tw.wm_geometry(f"+{x}+{y}")
+            label = ttk.Label(tw, text=self.text, style="Body.TLabel")
+            label.pack(ipadx=6, ipady=3)
+        except tk.TclError:
+            self.tipwindow = None
+            return
+        # Belt and braces: even if no hide event ever arrives, the tip retires
+        # on its own rather than sitting on top of the UI indefinitely.
+        # Only one tip on screen: a leaked predecessor cannot linger behind this
+        # one where nothing would ever dismiss it.
+        previous = Tooltip._visible
+        if previous is not None and previous is not self:
+            previous._hide()
+        Tooltip._visible = self
+        try:
+            self._auto_hide_id = self.widget.after(400, self._poll_pointer)
+        except tk.TclError:
+            self._auto_hide_id = None
+
+    def _poll_pointer(self):
+        """Retire the tip as soon as the pointer is no longer over its widget.
+
+        Polling frequently is what makes this reliable: whatever event was
+        missed, the tip clears within a fraction of a second of the pointer
+        moving away, instead of hanging around until something dismisses it.
+        """
+        self._auto_hide_id = None
+        if not self.tipwindow:
+            return
+        try:
+            px, py = self.widget.winfo_pointerxy()
+            under = self.widget.winfo_containing(px, py)
+        except (tk.TclError, KeyError):
+            self._hide()
+            return
+        # The tip is drawn just below the pointer, so landing on the tip itself
+        # still counts as hovering the trigger.
+        if under is not self.widget and (
+            self.tipwindow is None or under is None or not str(under).startswith(str(self.tipwindow))
+        ):
+            self._hide()
+            return
+        try:
+            self._auto_hide_id = self.widget.after(400, self._poll_pointer)
+        except tk.TclError:
+            self._auto_hide_id = None
 
     def _hide(self, _event=None):
         self._cancel()
+        if self._auto_hide_id:
+            try:
+                self.widget.after_cancel(self._auto_hide_id)
+            except tk.TclError:
+                pass
+            self._auto_hide_id = None
         if self.tipwindow:
-            self.tipwindow.destroy()
+            try:
+                self.tipwindow.destroy()
+            except tk.TclError:
+                pass
             self.tipwindow = None
+        if Tooltip._visible is self:
+            Tooltip._visible = None
 
 
 class PayrollProcessorGUI:
@@ -317,6 +417,14 @@ class PayrollProcessorGUI:
                 style.theme_use("aqua")
         except tk.TclError:
             pass
+        # Aqua draws native chrome and ignores `background`, but it still honours
+        # `foreground`. Setting a light-on-accent label there paints white text on
+        # a default light button, which reads as a blank control. Emphasis styles
+        # must therefore skip the colours entirely under aqua and lean on weight.
+        try:
+            self._is_aqua = style.theme_use() == "aqua"
+        except tk.TclError:
+            self._is_aqua = False
         style.configure("App.TFrame", background=tokens.bg)
         style.configure("Card.TFrame", background=tokens.surface, relief="solid", borderwidth=1)
         style.configure("CardTitle.TLabel", background=tokens.surface, foreground=tokens.text_secondary, font=(tokens.font_base, 11))
@@ -370,50 +478,56 @@ class PayrollProcessorGUI:
         on the automatic appearance the emphasis falls back to a bold label -
         which is still a visible difference from the neutral buttons beside it.
         """
+        accent_colors = {} if self._is_aqua else {
+            "background": tokens.accent,
+            "foreground": tokens.accent_text,
+            "bordercolor": tokens.accent,
+            "focuscolor": tokens.accent,
+        }
         style.configure(
             "Accent.TButton",
-            background=tokens.accent,
-            foreground=tokens.accent_text,
-            bordercolor=tokens.accent,
-            focuscolor=tokens.accent,
             padding=(14, 7),
             font=(tokens.font_base, 11, "bold"),
+            **accent_colors,
         )
-        style.map(
-            "Accent.TButton",
-            background=[("pressed", tokens.accent_active), ("active", tokens.accent_active), ("disabled", tokens.border)],
-            foreground=[("disabled", tokens.text_secondary)],
-        )
+        if not self._is_aqua:
+            style.map(
+                "Accent.TButton",
+                background=[("pressed", tokens.accent_active), ("active", tokens.accent_active), ("disabled", tokens.border)],
+                foreground=[("disabled", tokens.text_secondary)],
+            )
+        danger_colors = {} if self._is_aqua else {
+            "background": tokens.danger,
+            "foreground": tokens.danger_text,
+            "bordercolor": tokens.danger,
+            "focuscolor": tokens.danger,
+        }
         style.configure(
             "Danger.TButton",
-            background=tokens.danger,
-            foreground=tokens.danger_text,
-            bordercolor=tokens.danger,
-            focuscolor=tokens.danger,
             padding=(12, 6),
             font=(tokens.font_base, 11, "bold"),
+            **danger_colors,
         )
-        style.map(
-            "Danger.TButton",
-            background=[("pressed", tokens.danger_active), ("active", tokens.danger_active), ("disabled", tokens.border)],
-            foreground=[("disabled", tokens.text_secondary)],
-        )
+        if not self._is_aqua:
+            style.map(
+                "Danger.TButton",
+                background=[("pressed", tokens.danger_active), ("active", tokens.danger_active), ("disabled", tokens.border)],
+                foreground=[("disabled", tokens.text_secondary)],
+            )
         style.configure("Sidebar.TButton", padding=(12, 8), font=(tokens.font_base, 11), anchor=tk.W)
         style.configure(
             "SidebarActive.TButton",
             padding=(12, 8),
             font=(tokens.font_base, 11, "bold"),
             anchor=tk.W,
-            background=tokens.accent,
-            foreground=tokens.accent_text,
-            bordercolor=tokens.accent,
-            focuscolor=tokens.accent,
+            **accent_colors,
         )
-        style.map(
-            "SidebarActive.TButton",
-            background=[("pressed", tokens.accent_active), ("active", tokens.accent_active)],
-            foreground=[("pressed", tokens.accent_text), ("active", tokens.accent_text)],
-        )
+        if not self._is_aqua:
+            style.map(
+                "SidebarActive.TButton",
+                background=[("pressed", tokens.accent_active), ("active", tokens.accent_active)],
+                foreground=[("pressed", tokens.accent_text), ("active", tokens.accent_text)],
+            )
         style.configure("Chip.TButton", padding=(4, 0), font=(tokens.font_base, 10))
 
     # ------------------------------------------------------------------
@@ -496,12 +610,22 @@ class PayrollProcessorGUI:
                 text.set_fontsize(9)
 
         if tight:
+            # A constrained-layout figure re-solves itself on every draw and
+            # resize. Calling tight_layout() on top of it switches the engine
+            # back (emitting "The figure layout has changed to tight") and
+            # reintroduces the clipped-title-on-resize problem.
+            engine = None
             try:
-                fig.tight_layout()
-            except Exception:
-                # A colourbar or a constrained layout can refuse; the chart is
-                # still readable without the reflow.
-                pass
+                engine = fig.get_layout_engine()
+            except AttributeError:
+                engine = None
+            if engine is None or type(engine).__name__ != "ConstrainedLayoutEngine":
+                try:
+                    fig.tight_layout()
+                except Exception:
+                    # A colourbar can refuse; the chart is still readable
+                    # without the reflow.
+                    pass
 
     def _empty_axes(self, ax, title, message="No data for the current filters"):
         """Draw a titled placeholder instead of an empty grid."""
@@ -3193,7 +3317,16 @@ class PayrollProcessorGUI:
         edit_btn.grid(row=0, column=5, padx=(10, 0), sticky=tk.W)
         self._add_tooltip(edit_btn, "Edit the selected entry in the grid.")
 
-        ttk.Label(toolbar, text="Search uses top bar", style="Body.TLabel").grid(row=0, column=6, sticky=tk.W)
+        # Wrap rather than run off the toolbar: at narrower widths this hint was
+        # clipped mid-word ("Search uses to").
+        toolbar.columnconfigure(6, weight=1)
+        ttk.Label(
+            toolbar,
+            text="Search uses top bar",
+            style="Hint.TLabel",
+            wraplength=130,
+            justify=tk.LEFT,
+        ).grid(row=0, column=6, sticky=tk.W, padx=(12, 0))
 
         grid_frame = ttk.Frame(parent, style="App.TFrame")
         grid_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
@@ -4771,7 +4904,10 @@ class PayrollProcessorGUI:
         content_frame = ttk.Frame(self.dashboard_tab, style="App.TFrame")
         content_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         content_frame.columnconfigure(0, weight=3)
-        content_frame.columnconfigure(1, weight=2)
+        # The matplotlib canvas claims width aggressively, which squeezed this
+        # column until "Latest Entries" was clipped mid-word. A floor keeps the
+        # headings and tree readable at any window size.
+        content_frame.columnconfigure(1, weight=2, minsize=280)
         content_frame.rowconfigure(0, weight=1)
 
         chart_frame = ttk.Frame(content_frame, style="App.TFrame")
@@ -4779,13 +4915,19 @@ class PayrollProcessorGUI:
         chart_frame.columnconfigure(0, weight=1)
         chart_frame.rowconfigure(0, weight=1)
 
-        fig = Figure(figsize=(8, 4), dpi=100)
+        # Constrained layout re-solves on every resize. tight_layout() only runs
+        # at draw time, so once the canvas shrank to fit the frame the title was
+        # left outside the axes area and clipped.
+        fig = Figure(figsize=(8, 4), dpi=100, layout="constrained")
         ax = fig.add_subplot(1, 1, 1)
         canvas = FigureCanvasTkAgg(fig, master=chart_frame)
-        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        # Pack the toolbar first. Tk hands out space in pack order, so an
+        # expanding canvas packed ahead of it claimed the frame and left the
+        # toolbar nothing - the chart then overflowed and clipped its own title.
         toolbar = NavigationToolbar2Tk(canvas, chart_frame)
         toolbar.update()
         toolbar.pack(side=tk.BOTTOM, fill=tk.X)
+        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         self.dashboard_chart = {"fig": fig, "ax": ax, "canvas": canvas, "toolbar": toolbar}
         canvas.mpl_connect("button_press_event", self._on_dashboard_chart_click)
 
@@ -4828,6 +4970,9 @@ class PayrollProcessorGUI:
                 "KPIs, alerts and trends are read from stored payroll entries. "
                 "Turn storage on, then process a payroll ZIP.",
             )
+            # Without this the canvas keeps matplotlib's default 0.0-1.0 axes,
+            # which look like a broken chart rather than an empty one.
+            self._plot_dashboard_summary([])
             return
         self._clear_database_notice(self.dashboard_tab)
 
@@ -5520,6 +5665,12 @@ class PayrollProcessorGUI:
         self.refresh_monthly_employee_summary()
         self.refresh_insurance_summary()
         self.refresh_employees_tab()
+        # "Searching…" is set when typing begins, but only the data-grid path
+        # cleared it. With storage off that path returns early, so the label
+        # stayed on screen forever. Clearing here covers every route.
+        self.grid_search_job = None
+        if self.global_filter_status.get() == "Searching…":
+            self.global_filter_status.set("")
 
     def _update_window_label(self):
         start_year_val = self.global_start_year_var.get()
@@ -6104,7 +6255,7 @@ class PayrollProcessorGUI:
         messagebox.showinfo(
             "About Payroll Processor",
             "Payroll Processor\n"
-            "Version 3.1.3\n"
+            f"Version {APP_VERSION}\n"
             "Author: panlam\n"
             "Processes payroll ZIPs and generates Excel reports."
         )
@@ -6907,27 +7058,63 @@ class PayrollProcessorGUI:
         """
         entry = self._db_notice_panels.get(container)
         if entry is None:
-            panel = ttk.Frame(container, style="Empty.TFrame", padding=24)
-            ttk.Label(panel, text="Database storage is off", style="EmptyTitle.TLabel").pack(anchor=tk.W)
-            body = ttk.Label(
-                panel,
-                text=message,
-                style="EmptyBody.TLabel",
-                wraplength=380,
-                justify=tk.LEFT,
+            panel = ttk.Frame(container, style="Empty.TFrame", padding=(16, 10))
+            ttk.Label(panel, text="Database storage is off", style="EmptyTitle.TLabel").pack(
+                side=tk.LEFT, padx=(0, 12)
             )
-            body.pack(anchor=tk.W, pady=(6, 14))
+            # Pack the button before the expanding body so it keeps its width;
+            # otherwise the message absorbs the row and squeezes the action out.
             ttk.Button(
                 panel,
                 text="Open Database Settings…",
                 style="Accent.TButton",
                 command=self.open_db_settings,
-            ).pack(anchor=tk.W)
+            ).pack(side=tk.RIGHT, padx=(12, 0))
+            body = ttk.Label(
+                panel,
+                text=message,
+                style="EmptyBody.TLabel",
+                justify=tk.LEFT,
+            )
+            body.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+            # A fixed wraplength either clips (too wide for the column) or wastes
+            # the row (too narrow), and the column width depends on the window.
+            # Track the label's real width instead, with a guard so re-wrapping
+            # cannot feed itself a new <Configure> forever.
+            def _rewrap(event, label=body):
+                target = max(200, event.width - 8)
+                if abs(int(label.cget("wraplength") or 0) - target) > 8:
+                    label.configure(wraplength=target)
+
+            body.bind("<Configure>", _rewrap, add="+")
             self._db_notice_panels[container] = (panel, body)
         else:
             panel, body = entry
             body.configure(text=message)
-        panel.place(relx=0.5, rely=0.42, anchor=tk.CENTER)
+        # Overlaying (place) always hid whatever sat underneath - first a centred
+        # card over the KPI grid, then a top strip over the card headings. Adding
+        # the notice as a real row below the existing children keeps it visible
+        # and non-blocking without covering anything.
+        placed = False
+        try:
+            rows, cols = container.grid_size()
+            if rows or cols:
+                panel.grid(
+                    row=rows,
+                    column=0,
+                    columnspan=max(cols, 1),
+                    sticky=(tk.W, tk.E),
+                    pady=(10, 0),
+                )
+                placed = True
+        except tk.TclError:
+            placed = False
+        if not placed:
+            try:
+                panel.pack(side=tk.BOTTOM, fill=tk.X, pady=(10, 0))
+            except tk.TclError:
+                panel.place(relx=0.0, rely=1.0, relwidth=1.0, anchor=tk.SW)
         panel.lift()
 
     def _clear_database_notice(self, container):
