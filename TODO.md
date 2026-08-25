@@ -155,3 +155,123 @@ Receipt lookup excluded every filename containing the word `receipt`, including
 ordinary payroll PDFs for an employee such as `Receipt Employee`.
 > **Fixed in v3.1.5:** lookup excludes the exact archived receipt and generated
 > receipt suffix, not arbitrary employee-name text; a real two-page PDF merge passed.
+
+### QA audit — 2026-08-25: further processing and export testing
+
+> **Fixed in v3.1.6:** Bugs 13–28 are covered by dedicated regressions in
+> `versions/v3.1.6/tests/test_v316_regressions.py`; the full suite passes with
+> 349 tests and 93.26% core coverage.
+
+- [x] Bug 13 — HIGH: corrupt input returns CLI success and a non-error ledger status
+**File:** `versions/v3.1.5/src/payroll_cli.py:245`
+A deliberately corrupt ZIP raised `File is not a zip file`, but the wrapper
+returned exit code 0 and wrote ledger status `no-data`. Automation therefore
+cannot distinguish complete processing failure from a successful empty run.
+> **Tell dev:** "If every attempted input failed, set ledger status to `error` and return nonzero. Reserve `no-data` for successfully inspected inputs containing no payroll rows, and add a corrupt-ZIP CLI regression."
+
+- [x] Bug 14 — MEDIUM: failed and empty CLI runs advertise reports that do not exist
+**File:** `versions/v3.1.5/src/payroll_cli.py:187`
+Summary and detail paths are added to the ledger before processing. The corrupt
+ZIP run created neither workbook, yet `query outputs` would return both planned
+paths as if they were artifacts.
+> **Tell dev:** "Only populate `summary_xlsx` and `detail_xlsx` after each workbook is written and validated, or store planned paths separately with an explicit existence/status field."
+
+- [x] Bug 15 — HIGH: concurrent CLI runs collide and can corrupt their workbooks
+**File:** `versions/v3.1.5/src/payroll_cli.py:185`
+Output names have only second precision. Two isolated runs started together
+wrote the same summary/detail paths and both ledgers said `success`; `unzip -t`
+then found invalid compressed data in the shared summary workbook.
+> **Tell dev:** "Include the unique run id (or a UUID) in report filenames, write each workbook to a run-specific temporary path, atomically publish it, and add a two-process concurrency regression."
+
+- [x] Bug 16 — HIGH: secondary code labels split one payslip into phantom employees
+**File:** `versions/v3.1.5/src/process_payroll.py:62`
+Every line beginning with `Κωδικός` starts a new slip. One employee followed by
+`Κωδικός Ειδικότητας : 123` produced employees `001` and `Ειδικότητας`, splitting
+the real employee's amounts across two records.
+> **Tell dev:** "Anchor slip boundaries to the exact employee-code label/syntax and add a fixture containing secondary `Κωδικός ...` fields that must produce one complete payroll record."
+
+- [x] Bug 17 — HIGH: namesake employees have their confidential PDFs combined
+**File:** `versions/v3.1.5/src/process_payroll.py:424`
+Archive directory and filename identity prefer employee name and ignore code.
+Two one-page PDFs for codes `001` and `002`, both named `Common Name`, became one
+two-page monthly PDF under a shared folder.
+> **Tell dev:** "Include the stable employee code in archive directories and filenames, migrate existing paths safely, and assert that namesakes never share or merge payroll PDFs."
+
+- [x] Bug 18 — HIGH: duplicate ZIP member paths silently discard payroll documents
+**File:** `versions/v3.1.5/src/process_payroll.py:650`
+A ZIP with two distinct PDFs both stored as `same.pdf` had two members, but
+`extractall()` overwrote the first and processing returned only the second row.
+> **Tell dev:** "Validate normalized member-path uniqueness before extraction; reject duplicates with a clear input error or extract each member under a unique internal path while preserving both records."
+
+- [x] Bug 19 — HIGH: ZIP extraction has no decompression safety limits
+**File:** `versions/v3.1.5/src/process_payroll.py:656`
+Extraction has no expanded-size, member-count, per-file-size, or compression-ratio
+guard. A disposable 8,274-byte archive expanded to 8,388,608 bytes and was accepted.
+> **Tell dev:** "Inspect every `ZipInfo` before extraction and reject configurable cumulative size, per-member size, member-count, path-depth, and compression-ratio limits; test a high-ratio archive without fully expanding it."
+
+- [x] Bug 20 — HIGH: leading-zero employee codes collapse during CSV round-trip
+**File:** `versions/v3.1.5/src/create_employee_reports.py:39`
+`read_csv` infers employee codes as numbers. Codes `001` and `1` both reloaded as
+integer `1`, corrupting identity and allowing distinct employees to collapse.
+> **Tell dev:** "Load `EmployeeCode` with an explicit string dtype and controlled NA handling, then assert `001` survives the parser/CSV/report pipeline exactly."
+
+- [x] Bug 21 — HIGH: receipt payroll period is inferred from unrelated text
+**File:** `versions/v3.1.5/src/process_payroll.py:238`
+The parser searches the entire receipt for the first year and any month substring.
+Beneficiary `ΜΑΡΤΙΝΟΣ` triggered March, and a January 2024 payment containing `DEC`
+was assigned December 2024 instead of December 2023.
+> **Tell dev:** "Parse payroll period only from explicitly labelled payment-purpose text; otherwise fall back to paid date. When a labelled month lacks a year, apply a tested year-boundary rule."
+
+- [x] Bug 22 — HIGH: multiple receipts for one employee/month overwrite each other
+**File:** `versions/v3.1.5/src/process_payroll.py:477`
+Receipt archive names contain no transaction or content identity. Two different
+receipts resolved to one path; the second was not copied, then the first archived
+receipt was merged again, losing the second receipt and duplicating the first.
+> **Tell dev:** "Give receipts a stable transaction/content identity in their archive name, never merge a source that was not archived, and test two distinct same-employee/month receipts end to end."
+
+- [x] Bug 23 — HIGH: reprocessing a payroll PDF duplicates archived pages
+**File:** `versions/v3.1.5/src/process_payroll.py:611`
+An existing monthly PDF is always merged with the new source without checking
+content identity. Processing the same one-page salary PDF twice produced two
+identical pages.
+> **Tell dev:** "Make payroll archiving content-idempotent using a source checksum/manifest and assert that reprocessing identical input leaves page count and bytes stable."
+
+- [x] Bug 24 — HIGH: dot-decimal amounts are multiplied by 100
+**File:** `versions/v3.1.5/src/process_payroll.py:335`
+Receipt parsing removes every dot before converting the value. `1234.56` became
+`123456.0`, which can prevent payment matching or mark the wrong financial data.
+> **Tell dev:** "Use one locale-aware amount parser for receipts and payroll rows; regress `1.234,56`, `1234,56`, `1,234.56`, and `1234.56` with unambiguous expected values."
+
+- [x] Bug 25 — HIGH: detailed Excel reports permit formula injection
+**File:** `versions/v3.1.5/src/create_employee_reports.py:202`
+Untrusted parsed strings are written with XlsxWriter's formula detection enabled.
+An employee name `=1+1` was serialized as an Excel `<f>1+1</f>` formula rather
+than literal text; source filenames expose the same path.
+> **Tell dev:** "Disable `strings_to_formulas` for exported data or explicitly write all untrusted text cells as strings, and test leading `=`, `+`, `-`, `@`, whitespace, and newline variants."
+
+- [x] Bug 26 — MEDIUM: rows missing employee code still vanish from summaries
+**File:** `versions/v3.1.5/src/create_employee_reports.py:73`
+The code creates a normalized fallback series but never assigns it to
+`df['EmployeeCode']`; the later groupby still drops the null-key row.
+> **Tell dev:** "Assign a stable fallback identifier before grouping and add a name-only payroll regression that survives both summary and detail output."
+
+- [x] Bug 27 — MEDIUM: April through December payslip filenames are misclassified
+**File:** `versions/v3.1.5/src/process_payroll.py:392`
+The classifier documentation promises month-name recognition but implements only
+January, February, and March. April through December fall back to `Salary` while
+the first three months become `Payslip`, fragmenting filters and summaries.
+> **Tell dev:** "Normalize and recognize all twelve supported Greek month names through one table, and parameterize every month in the classifier tests."
+
+- [x] Bug 28 — MEDIUM: invalid insurance months are parsed and archived
+**File:** `versions/v3.1.5/src/process_payroll.py:267`
+The insurance parser accepts any one- or two-digit month without range validation.
+`ΠΕΡΙΟΔΟΣ ΑΠΟ 13/2026` produced `claim_month=13` and archive name
+`202613_EFKA_TPTE_RF123456.pdf`.
+> **Tell dev:** "Validate month 1–12 before returning, archiving, or storing a claim; reject 0 and 13 with explicit diagnostics and focused parser regressions."
+
+#### Usability Assessment — further processing and exports
+
+- [ ] Show per-file `processed`, `no payroll data`, or `failed` status before presenting an overall batch result.
+- [ ] Display employee code alongside name anywhere archive identity or receipt matching is involved.
+- [ ] Preview ZIP member count and expanded size, with a clear explanation when safety limits reject an archive.
+- [ ] Include a visible run id in report filenames and the Processing log so concurrent or repeated outputs are distinguishable.

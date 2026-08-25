@@ -2,6 +2,54 @@
 
 All notable changes to this project are documented here. Newer entries go to the top.
 
+## v3.1.6 — 2026-08-25
+
+**Processing correctness and identity**
+- Tightened payslip boundary detection so secondary labels such as `Κωδικός
+  Ειδικότητας` cannot create phantom employees.
+- Preserved employee codes as strings through CSV/report generation, retained
+  missing-code rows under a stable `Unknown` label, and included employee code
+  in archive directories and filenames so namesakes remain isolated.
+- Unified Greek/US amount parsing across receipts, CLI rows and standalone
+  processing; dot-decimal values such as `1234.56` are no longer multiplied by
+  100.
+- Recognized all twelve Greek month names, parsed receipt payroll periods only
+  from complete month tokens on the same line as an optional year, and rejected
+  insurance periods outside months 1–12.
+
+**Safe archives and idempotent receipts**
+- Replaced bulk ZIP extraction with validated PDF-member extraction. Duplicate
+  normalized paths, traversal, excessive member counts/sizes, total expanded
+  size and suspicious compression ratios are rejected before expansion.
+- Added employee-code-qualified payroll paths and fail-closed namesake receipt
+  lookup. Receipts now carry a source-content digest in their archive filename.
+- Added source-checksum manifests so reprocessing an identical payroll PDF or
+  receipt does not append duplicate pages, while distinct same-month receipts
+  remain separate and merge once.
+
+**Truthful, isolated exports**
+- Corrupt/all-failed CLI batches now return nonzero with ledger status `error`;
+  genuine empty inputs retain `no-data`.
+- Workbook paths are recorded only after both reports are written successfully.
+  Filenames contain run identity plus a unique suffix, and workbooks publish
+  atomically from run-specific temporary files to prevent concurrent corruption.
+- Disabled XlsxWriter formula and URL inference for report data, preventing
+  parsed values such as `=1+1` from becoming active spreadsheet formulas.
+- Bundles and installers now advertise the complete `3.1.6` version.
+
+**Self-contained macOS release**
+- Corrected Python framework relinking so every embedded dependency keeps its
+  actual path instead of being redirected to the framework executable.
+- Made the builder compatible with the macOS system `rsync`, removed build-only
+  framework metadata and eliminated the slow per-file quarantine cleanup pass.
+- Set the bundled framework as `PYTHONHOME`; the running app now loads Python,
+  Tcl and Tk exclusively from inside `Payroll Processor.app`.
+
+**Verification**
+- Added focused regressions for audit Bugs 13–28 and verified 349 passing tests.
+  Core coverage is 93.26% against the enforced 65% gate. Isolated CLI, receipt,
+  concurrent-export and signed-bundle GUI smoke tests also pass.
+
 ## v3.1.5 — 2026-08-25
 
 **Release reliability**

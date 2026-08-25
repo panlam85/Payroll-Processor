@@ -2,4 +2,4 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec "$ROOT_DIR/versions/v3.1.5/scripts/create_simple_installer.sh" "$@"
+exec "$ROOT_DIR/versions/v3.1.6/scripts/create_simple_installer.sh" "$@"

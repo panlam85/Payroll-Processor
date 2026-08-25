@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Wrapper that delegates to the v3.1.5 app bundle builder."""
+"""Wrapper that delegates to the v3.1.6 app bundle builder."""
 
 from pathlib import Path
 import runpy
 import sys
 
-VERSION_SCRIPT = Path(__file__).resolve().parent / "versions" / "v3.1.5" / "scripts" / "create_simple_app.py"
+VERSION_SCRIPT = Path(__file__).resolve().parent / "versions" / "v3.1.6" / "scripts" / "create_simple_app.py"
 
 if not VERSION_SCRIPT.exists():
-    sys.stderr.write(f"Unable to find v3.1.5 builder at {VERSION_SCRIPT}\n")
+    sys.stderr.write(f"Unable to find v3.1.6 builder at {VERSION_SCRIPT}\n")
     sys.exit(1)
 
 globals_dict = runpy.run_path(str(VERSION_SCRIPT))

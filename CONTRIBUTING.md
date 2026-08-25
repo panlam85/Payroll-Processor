@@ -35,7 +35,7 @@ it in **Settings → Database**. Migrations run automatically at startup.
 **This project keeps every release as a frozen directory under `versions/`.**
 
 ```
-versions/v1.0/  v1.1/  …  v3.1.4/  v3.1.5/   ← each a complete copy of the app
+versions/v1.0/  v1.1/  …  v3.1.5/  v3.1.6/   ← each a complete copy of the app
 ```
 
 Git history exists, but the `versions/` folders are the project's real record of
@@ -58,7 +58,7 @@ grep -m1 -o 'versions/v[0-9.]*' AGENTS.md
 ### Cutting a new version
 
 ```bash
-./bump_version.sh v3.1.5
+./bump_version.sh v3.1.7
 ```
 
 That copies the active tree and repoints `AGENTS.md`, the root wrappers,
