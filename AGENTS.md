@@ -7,23 +7,23 @@
   - Detail workbook: every payroll entry in a single table.
 
 ## Current active version
-- Active code lives in `versions/v3.1.4/`.
-- Root scripts (`launch_gui.sh`, `run_dev.sh`, `create_simple_app.py`, `create_simple_installer.sh`) delegate to `versions/v3.1.4`.
+- Active code lives in `versions/v3.1.5/`.
+- Root scripts (`launch_gui.sh`, `run_dev.sh`, `create_simple_app.py`, `create_simple_installer.sh`) delegate to `versions/v3.1.5`.
 - Older versions are kept for history; do not edit them unless asked.
 
 ## Key files and responsibilities
-- `versions/v3.1.4/src/payroll_gui.py`
+- `versions/v3.1.5/src/payroll_gui.py`
   - GUI, menus, and report orchestration.
   - Controls save locations and spawns the processing thread.
-- `versions/v3.1.4/src/process_payroll.py`
+- `versions/v3.1.5/src/process_payroll.py`
   - Extracts PDFs from ZIPs and parses payroll fields.
   - Document type classifier defaults to "Salary".
-- `versions/v3.1.4/src/create_employee_reports.py`
+- `versions/v3.1.5/src/create_employee_reports.py`
   - Builds summary workbook.
   - Builds detail workbook (every row).
-- `versions/v3.1.4/scripts/launch_gui.sh`
+- `versions/v3.1.5/scripts/launch_gui.sh`
   - Production-style launcher; caches pip installs via a requirements hash.
-- `versions/v3.1.4/scripts/run_dev.sh`
+- `versions/v3.1.5/scripts/run_dev.sh`
   - Dev launcher with the same environment setup.
 
 ## How the data flows
@@ -49,7 +49,7 @@
 - Build installer: `./create_simple_installer.sh`
 
 ## Coding tips
-- Keep changes inside `versions/v3.1.4` unless the user asks for a new version.
+- Keep changes inside `versions/v3.1.5` unless the user asks for a new version.
 - Use `./bump_version.sh vX.Y.Z` to create a new version with real copied tests (no symlinks) and update root wrappers.
 - Update the root wrappers if a new version becomes active.
 - For GUI tweaks, check macOS menu behavior (`tk::mac::setmenuname` and `tkAboutDialog`).

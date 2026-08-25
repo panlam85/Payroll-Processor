@@ -2,7 +2,23 @@
 
 All notable changes to this project are documented here. Newer entries go to the top.
 
-## Unreleased — UI/UX pass (in `versions/v3.1.4`)
+## v3.1.5 — 2026-08-25
+
+**Release reliability**
+- Added a Tk-aware Python selector for clean GUI and development launches, and
+  made the CLI share the same requirement-hashed runtime cache. This avoids the
+  local Homebrew Python installation that has no `_tkinter` or app dependencies.
+- Installer versioning now derives from the selected version directory. Bundles
+  carry an `APP_VERSION` resource for the About dialog, reject build Pythons
+  without Tk, and are rebuilt fresh instead of silently reusing an older
+  `dist/Payroll Processor.app`.
+
+**Side-by-side QA safety**
+- Added `PAYROLL_PROCESSOR_DATA_ROOT` so a source build can keep its database
+  configuration, preferences, reports, archives, watch folder and backups
+  separate from an older installed version. Normal launches keep the legacy
+  paths when the variable is unset.
+- Added path-isolation and database-off navigation regression coverage.
 
 **Notifications**
 - Added non-blocking toasts (bottom right, stacked, auto-dismissing, optional
@@ -35,6 +51,13 @@ All notable changes to this project are documented here. Newer entries go to the
   "Run Backup Now" runs in the background.
 
 **Navigation and layout**
+- Fixed the Data Grid showing Monthly Summary's storage-disabled explanation;
+  only the selected analytics subtab now refreshes its notice.
+- Removed the duplicate Analytics status label.
+- Fixed database-off Insurance and Employees views rendering as blank pages;
+  both retain their layouts and show a working database-settings notice.
+- Fixed inline notice placement by using Tk's `grid_size()` column/row order,
+  and made notice removal respect the widget's active geometry manager.
 - Filter bar grouped into Period / Document / Search, with the applied filters
   shown as removable chips, a "Clear all" button, and a search group that wraps
   to its own line at narrow widths.

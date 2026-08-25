@@ -116,8 +116,8 @@ version.
 ```
 PayrollProcessor/
 ├── versions/
-│   ├── v1.0/ … v3.1.3/     # frozen historical releases
-│   └── v3.1.4/             # active codebase
+│   ├── v1.0/ … v3.1.4/     # frozen historical releases
+│   └── v3.1.5/             # active codebase
 ├── launch_gui.sh           # → versions/<active>/scripts/launch_gui.sh
 ├── run_dev.sh              # → versions/<active>/scripts/run_dev.sh
 ├── payroll_cli.sh          # → versions/<active>/scripts/payroll_cli.sh
@@ -139,7 +139,7 @@ Core modules live in `versions/<active>/src/`:
 ### Cutting a new version
 
 ```bash
-./bump_version.sh v3.1.5
+./bump_version.sh v3.1.6
 ```
 
 This copies the active tree and repoints the root wrappers, `AGENTS.md`,
@@ -149,8 +149,8 @@ directory; older versions are history and should not be edited.
 ### Tests
 
 ```bash
-versions/v3.1.4/.venv/bin/python -m pytest -q                                    # 283 tests
-versions/v3.1.4/.venv/bin/python -m pytest -q --cov --cov-config=.coveragerc     # with the gate
+versions/v3.1.5/.venv/bin/python -m pytest -q                                    # 303 tests
+versions/v3.1.5/.venv/bin/python -m pytest -q --cov --cov-config=.coveragerc     # with the gate
 ```
 
 The coverage gate is 65%. The parsing, storage, and CLI core currently sits at

@@ -2,4 +2,4 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec "$ROOT_DIR/versions/v3.1.4/scripts/run_dev.sh" "$@"
+exec "$ROOT_DIR/versions/v3.1.5/scripts/run_dev.sh" "$@"

@@ -35,7 +35,7 @@ it in **Settings → Database**. Migrations run automatically at startup.
 **This project keeps every release as a frozen directory under `versions/`.**
 
 ```
-versions/v1.0/  v1.1/  …  v3.1.3/  v3.1.4/   ← each a complete copy of the app
+versions/v1.0/  v1.1/  …  v3.1.4/  v3.1.5/   ← each a complete copy of the app
 ```
 
 Git history exists, but the `versions/` folders are the project's real record of
