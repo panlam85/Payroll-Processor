@@ -197,6 +197,7 @@ def run_processing(args: argparse.Namespace) -> int:
     receipt_count = 0
     claim_count = 0
     file_results: List[Dict[str, object]] = []
+    combined_df = pd.DataFrame()
 
     with tempfile.TemporaryDirectory() as temp_dir:
         for index, file_path in enumerate(file_paths):
@@ -232,6 +233,12 @@ def run_processing(args: argparse.Namespace) -> int:
                 result["error"] = str(exc)
             file_results.append(result)
 
+        # Load the CSVs while the temporary directory still exists. The
+        # combined DataFrame remains valid after cleanup and report writing can
+        # safely happen below.
+        if csv_files:
+            combined_df = create_employee_reports.load_payroll_data(csv_files)
+
     ledger_entry["metrics"]["receipts"] = receipt_count
     ledger_entry["metrics"]["claims"] = claim_count
     ledger_entry["inputs"]["file_results"] = file_results
@@ -245,7 +252,6 @@ def run_processing(args: argparse.Namespace) -> int:
         print("No payroll data extracted. Outputs were not generated.")
         return 0
 
-    combined_df = create_employee_reports.load_payroll_data(csv_files)
     if combined_df.empty:
         finished = _utc_now()
         ledger_entry["status"] = "no-data"

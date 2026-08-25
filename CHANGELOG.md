@@ -13,6 +13,22 @@ All notable changes to this project are documented here. Newer entries go to the
   without Tk, and are rebuilt fresh instead of silently reusing an older
   `dist/Payroll Processor.app`.
 
+**Processing and exports**
+- Isolated every ZIP extraction in a fresh directory, preventing similarly
+  named archives such as `pay.zip` and `payz.zip` from duplicating records.
+- Kept CLI intermediate payroll data alive long enough to generate both Excel
+  reports and a truthful success ledger.
+- Filed and matched receipts by their parsed payroll period, with paid date as
+  a fallback, and merged standalone receipt PDFs as well as ZIP-contained ones.
+- Fixed receipt lookup for employees whose names contain "Receipt".
+- Preserved payroll rows that have an employee code but no name, labelled
+  missing dates as `Unknown`, handled missing numeric values in detail exports,
+  and made worksheet-name uniqueness match Excel's case-insensitive rules.
+- Accepted canonical and common alias document types in grid edits, and fixed
+  numeric parsing for both `1,000` and European values such as `1.234,56`.
+- Added regressions for every processing/export defect and verified the suite
+  at 322 passing tests, plus isolated multi-ZIP and real-PDF receipt runs.
+
 **Side-by-side QA safety**
 - Added `PAYROLL_PROCESSOR_DATA_ROOT` so a source build can keep its database
   configuration, preferences, reports, archives, watch folder and backups

@@ -91,6 +91,51 @@ def test_write_reports(tmp_path, capsys):
     create_employee_reports.write_detail_report(pd.DataFrame(), str(tmp_path / "empty_detail.xlsx"))
 
 
+def test_write_employee_reports_handles_case_insensitive_sheet_collision(tmp_path):
+    summary_df = pd.DataFrame(
+        [
+            {
+                "EmployeeCode": "E1",
+                "EmployeeName": name,
+                "Month": "2026-01",
+                "DocumentType": "Salary",
+                "BasicSalary": 1000,
+                "TotalEarnings": 1200,
+                "NetPay": 900,
+            }
+            for name in ("Alice", "alice")
+        ]
+    )
+    output = tmp_path / "case-collision.xlsx"
+
+    create_employee_reports.write_employee_reports(summary_df, str(output))
+
+    assert output.exists()
+
+
+def test_write_detail_report_handles_missing_numeric_values(tmp_path):
+    detail_df = pd.DataFrame(
+        [
+            {
+                "EmployeeCode": "E1",
+                "EmployeeName": "Synthetic Employee",
+                "Date": "01/01/2026",
+                "DocumentType": "Salary",
+                "BasicSalary": 1000,
+                "TotalEarnings": 1200,
+                "NetPay": 900,
+                "EFKAEmployee": None,
+                "EFKAEmployer": None,
+            }
+        ]
+    )
+    output = tmp_path / "missing-values-detail.xlsx"
+
+    create_employee_reports.write_detail_report(detail_df, str(output))
+
+    assert output.exists()
+
+
 def test_load_payroll_data_bad_csv(tmp_path, capsys):
     bad_path = tmp_path / "missing.csv"
     df = create_employee_reports.load_payroll_data([str(bad_path)])

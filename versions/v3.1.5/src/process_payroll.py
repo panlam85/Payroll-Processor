@@ -457,11 +457,29 @@ def _archive_pdf_for_claim(archive_root: str, file_path: str, claim: Dict[str, o
     return {"path": dest_path, "copied": copied}
 
 
+def _receipt_period_date(receipt: Dict[str, object]):
+    """Return the payroll-period date for a receipt, falling back to its paid date."""
+    year = receipt.get("payroll_year")
+    month = receipt.get("payroll_month")
+    if isinstance(year, int) and isinstance(month, int):
+        try:
+            return datetime.date(year, month, 1)
+        except ValueError:
+            pass
+    paid_date = receipt.get("paid_date")
+    if isinstance(paid_date, datetime.datetime):
+        return paid_date.date()
+    if isinstance(paid_date, datetime.date):
+        return paid_date
+    return None
+
+
 def _archive_pdf_for_receipt(archive_root: str, file_path: str, receipt: Dict[str, object]) -> Dict[str, object]:
+    period_date = _receipt_period_date(receipt)
     entry = {
         "EmployeeName": receipt.get("employee_name"),
         "EmployeeCode": None,
-        "Date": receipt.get("paid_date").strftime("%d/%m/%Y") if receipt.get("paid_date") else None,
+        "Date": period_date.strftime("%d/%m/%Y") if period_date else None,
         "DocumentType": "Receipt",
     }
     archive_dir = _derive_archive_dir(archive_root, entry)
@@ -483,26 +501,31 @@ def find_monthly_payment_pdfs(archive_root: str, receipt: Dict[str, object]) -> 
     suffix or document type is skipped so a receipt is never merged into
     another receipt.
     """
-    paid_date = receipt.get("paid_date")
-    if not paid_date:
+    period_date = _receipt_period_date(receipt)
+    if not period_date:
         return []
     entry = {
         "EmployeeName": receipt.get("employee_name"),
         "EmployeeCode": None,
-        "Date": paid_date.strftime("%d/%m/%Y"),
+        "Date": period_date.strftime("%d/%m/%Y"),
         "DocumentType": "Receipt",
     }
     archive_dir = _derive_archive_dir(archive_root, entry)
     if not os.path.isdir(archive_dir):
         return []
+    archived_receipt = receipt.get("archive_path")
+    archived_receipt = os.path.abspath(archived_receipt) if archived_receipt else None
     matches = []
     for fname in sorted(os.listdir(archive_dir)):
         if not fname.lower().endswith(".pdf"):
             continue
-        lowered = fname.lower()
-        if "_receipt" in lowered or "receipt" in lowered:
+        candidate = os.path.join(archive_dir, fname)
+        if archived_receipt and os.path.abspath(candidate) == archived_receipt:
             continue
-        matches.append(os.path.join(archive_dir, fname))
+        lowered = fname.lower()
+        if lowered.endswith("_receipt_receipt.pdf"):
+            continue
+        matches.append(candidate)
     return matches
 
 
@@ -625,8 +648,11 @@ def process_zip(zip_path: str, temp_root: str, archive_root: str = None):
     claims: List[Dict[str, object]] = []
     archived_keys = set()
     with zipfile.ZipFile(zip_path, "r") as zf:
-        # Extract into a temporary directory
-        extract_dir = os.path.join(temp_root, os.path.basename(zip_path).rstrip('.zip'))
+        # Every archive gets a fresh directory. Reusing a basename-derived path
+        # can leave PDFs from an earlier archive in the next archive's walk.
+        archive_stem = os.path.splitext(os.path.basename(zip_path))[0]
+        safe_stem = _sanitize_segment(archive_stem).replace(" ", "_")
+        extract_dir = tempfile.mkdtemp(prefix=f"{safe_stem}_", dir=temp_root)
         zf.extractall(extract_dir)
         # Walk through all PDFs in the extracted directory
         for root, _, files in os.walk(extract_dir):
@@ -719,6 +745,8 @@ def process_pdf_file(pdf_path: str, temp_root: str, archive_root: str = None):
             receipt["archive_path"] = archive_info["path"]
             receipt["archive_copied"] = archive_info["copied"]
         receipts.append(receipt)
+        if archive_root:
+            _merge_receipts_after_archiving(archive_root, receipts)
         return pd.DataFrame(records), claims, receipts
     claim = parse_insurance_claim(pdf_path)
     if claim:

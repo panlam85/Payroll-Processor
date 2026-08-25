@@ -149,12 +149,12 @@ directory; older versions are history and should not be edited.
 ### Tests
 
 ```bash
-versions/v3.1.5/.venv/bin/python -m pytest -q                                    # 303 tests
+versions/v3.1.5/.venv/bin/python -m pytest -q                                    # 322 tests
 versions/v3.1.5/.venv/bin/python -m pytest -q --cov --cov-config=.coveragerc     # with the gate
 ```
 
 The coverage gate is 65%. The parsing, storage, and CLI core currently sits at
-**94.6%**:
+**94.47%**:
 
 | Module | Coverage |
 |---|---|

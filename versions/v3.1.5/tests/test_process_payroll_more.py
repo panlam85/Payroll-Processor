@@ -347,6 +347,35 @@ def test_process_zip_and_pdf(monkeypatch, tmp_path):
     assert claims
 
 
+def test_process_zip_uses_a_unique_extraction_directory_per_archive(monkeypatch, tmp_path):
+    first_pdf = tmp_path / "first.pdf"
+    second_pdf = tmp_path / "second.pdf"
+    first_pdf.write_text("first")
+    second_pdf.write_text("second")
+    first_zip = tmp_path / "pay.zip"
+    second_zip = tmp_path / "payz.zip"
+    with zipfile.ZipFile(first_zip, "w") as zf:
+        zf.write(first_pdf, arcname="first.pdf")
+    with zipfile.ZipFile(second_zip, "w") as zf:
+        zf.write(second_pdf, arcname="second.pdf")
+
+    extract_root = tmp_path / "extract"
+    extract_root.mkdir()
+    monkeypatch.setattr(process_payroll, "parse_insurance_claim", lambda path: None)
+    monkeypatch.setattr(process_payroll, "parse_transfer_receipt", lambda path: None)
+    monkeypatch.setattr(
+        process_payroll,
+        "parse_pdf",
+        lambda path, doc: [{"EmployeeCode": Path(path).stem}],
+    )
+
+    first_records, _, _ = process_payroll.process_zip(str(first_zip), str(extract_root))
+    second_records, _, _ = process_payroll.process_zip(str(second_zip), str(extract_root))
+
+    assert first_records["EmployeeCode"].tolist() == ["first"]
+    assert second_records["EmployeeCode"].tolist() == ["second"]
+
+
 def test_process_zip_split_pages(monkeypatch, tmp_path):
     pdf_file = tmp_path / "file.pdf"
     pdf_file.write_text("pdf")
@@ -439,10 +468,23 @@ def test_process_pdf_file_receipt(monkeypatch, tmp_path):
     pdf_file = tmp_path / "file.pdf"
     pdf_file.write_text("pdf")
 
-    monkeypatch.setattr(process_payroll, "parse_transfer_receipt", lambda path: {"employee_name": "Jane", "paid_date": datetime.date(2024, 1, 1)})
+    receipt = {"employee_name": "Jane", "paid_date": datetime.date(2024, 1, 1)}
+    merge_calls = []
+    monkeypatch.setattr(process_payroll, "parse_transfer_receipt", lambda path: receipt)
     monkeypatch.setattr(process_payroll, "parse_insurance_claim", lambda path: None)
+    monkeypatch.setattr(
+        process_payroll,
+        "_archive_pdf_for_receipt",
+        lambda *args, **kwargs: {"path": "receipt.pdf", "copied": True},
+    )
+    monkeypatch.setattr(
+        process_payroll,
+        "_merge_receipts_after_archiving",
+        lambda archive_root, receipts: merge_calls.append((archive_root, list(receipts))),
+    )
     records, claims, receipts = process_payroll.process_pdf_file(str(pdf_file), str(tmp_path), archive_root=str(tmp_path / "archive"))
-    assert receipts
+    assert receipts == [receipt]
+    assert merge_calls == [(str(tmp_path / "archive"), [receipt])]
 
 
 def test_process_pdf_file_unsplit(monkeypatch, tmp_path):

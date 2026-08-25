@@ -115,19 +115,13 @@ def test_parse_numeric_reads_comma_as_decimal_when_no_dot(gui):
     assert gui._parse_numeric("1,50") == pytest.approx(1.5)
 
 
-def test_parse_numeric_misreads_thousands_separator_without_decimals(gui):
-    """KNOWN DEFECT — pinned so a fix trips this test deliberately.
-
-    The comma-vs-dot heuristic keys off whether a dot is present. A
-    US-style thousands separator with no decimal part ("1,000") hits the
-    European branch and becomes 1.0 — a 1000x understatement. Values that
-    keep their decimals ("1,000.00") parse correctly, which is why the
-    app's own _format_currency output is safe: it always emits 2dp. The
-    exposure is cell text that arrives already formatted from elsewhere,
-    e.g. via _build_export_totals over a database view.
-    """
-    assert gui._parse_numeric("1,000") == pytest.approx(1.0)
+def test_parse_numeric_reads_thousands_separator_without_decimals(gui):
+    assert gui._parse_numeric("1,000") == pytest.approx(1000.0)
     assert gui._parse_numeric("1,000.00") == pytest.approx(1000.0)
+
+
+def test_parse_numeric_reads_european_thousands_and_decimal_separators(gui):
+    assert gui._parse_numeric("1.234,56") == pytest.approx(1234.56)
 
 
 def test_parse_numeric_returns_none_for_garbage(gui):
@@ -260,22 +254,34 @@ def test_validate_grid_edit_rejects_uneditable_column(gui):
 def test_validate_grid_edit_document_type_accepts_lowercase_vocabulary(gui):
     ok, value, _ = gui._validate_grid_edit("document_type", "salary")
     assert ok is True
-    assert value == "salary"
+    assert value == "Salary"
 
 
-def test_validate_grid_edit_document_type_rejects_stored_capitalisation(gui):
-    """KNOWN DEFECT — pinned so a fix trips this test deliberately.
+@pytest.mark.parametrize(
+    "entered,canonical",
+    [
+        ("Salary", "Salary"),
+        ("Bonus", "Bonus"),
+        ("VacationAllowance", "VacationAllowance"),
+        ("vacation_allowance", "VacationAllowance"),
+        ("UnusedLeaveCompensation", "UnusedLeaveCompensation"),
+        ("unused_leave_compensation", "UnusedLeaveCompensation"),
+        ("Payslip", "Payslip"),
+        ("other", "Other"),
+    ],
+)
+def test_validate_grid_edit_document_type_accepts_canonical_and_aliases(gui, entered, canonical):
+    ok, value, message = gui._validate_grid_edit("document_type", entered)
+    assert ok is True
+    assert value == canonical
+    assert message == ""
 
-    process_payroll writes 'Salary', 'Bonus' and 'VacationAllowance', but
-    this validator accepts only a lowercase snake_case vocabulary and never
-    case-folds its input (_commit_grid_edit only .strip()s before calling).
-    So retyping the value the grid already displays is rejected, and the
-    values it does accept do not match what the rest of the app writes.
-    """
-    for stored in ("Salary", "Bonus", "VacationAllowance"):
-        ok, _, message = gui._validate_grid_edit("document_type", stored)
-        assert ok is False
-        assert "Document type must be one of" in message
+
+def test_validate_grid_edit_document_type_rejects_unknown_value(gui):
+    ok, value, message = gui._validate_grid_edit("document_type", "Commission")
+    assert ok is False
+    assert value == "Commission"
+    assert "Document type must be one of" in message
 
 
 # --------------------------------------------------------------------------

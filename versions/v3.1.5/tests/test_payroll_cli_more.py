@@ -189,6 +189,47 @@ def test_run_processing_full_flow(tmp_path, monkeypatch, capsys):
     assert list(Path(args.ledger_dir).glob("run_*.json"))
 
 
+def test_run_processing_loads_temporary_csvs_before_cleanup(tmp_path, monkeypatch):
+    pdf = tmp_path / "one.pdf"
+    pdf.write_text("pdf")
+    df = pd.DataFrame(
+        [
+            {
+                "EmployeeCode": "E1",
+                "EmployeeName": "Synthetic Employee",
+                "Date": "01/01/2026",
+                "DocumentType": "Salary",
+                "BasicSalary": 1000,
+                "TotalEarnings": 1200,
+                "NetPay": 900,
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        payroll_cli.process_payroll,
+        "process_pdf_file",
+        lambda *args, **kwargs: (df, [], []),
+    )
+    args = argparse.Namespace(
+        zips=[str(pdf)],
+        out=str(tmp_path / "out"),
+        report_prefix="employee_reports",
+        ledger_dir=str(tmp_path / "ledger"),
+        archive_root=None,
+        dry_run=False,
+        no_open=True,
+        run_id="temp-lifetime",
+        notes="",
+    )
+
+    assert payroll_cli.run_processing(args) == 0
+    assert len(list((tmp_path / "out").glob("*_summary.xlsx"))) == 1
+    assert len(list((tmp_path / "out").glob("*_detail.xlsx"))) == 1
+    ledger = json.loads((tmp_path / "ledger" / "run_temp-lifetime.json").read_text(encoding="utf-8"))
+    assert ledger["status"] == "success"
+    assert ledger["metrics"]["records"] == 1
+
+
 def test_run_processing_zip_branch(tmp_path, monkeypatch):
     zip_path = tmp_path / "files.zip"
     zip_path.write_text("zip")

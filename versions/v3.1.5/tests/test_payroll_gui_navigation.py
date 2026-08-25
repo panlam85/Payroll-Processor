@@ -1,5 +1,6 @@
 """Regression tests for database-off navigation and notice behavior."""
 
+import datetime
 import inspect
 from unittest.mock import Mock
 
@@ -7,6 +8,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 
+import payroll_gui
 from payroll_gui import PayrollProcessorGUI
 
 
@@ -81,3 +83,48 @@ def test_database_notice_uses_next_free_grid_row():
     grid_options = panel.grid.call_args.kwargs
     assert grid_options["row"] == 2
     assert grid_options["columnspan"] == 1
+
+
+def test_gui_standalone_receipt_is_merged_after_archiving(tmp_path, monkeypatch):
+    class ImmediateRoot:
+        def after(self, _delay, callback):
+            callback()
+
+    gui = PayrollProcessorGUI.__new__(PayrollProcessorGUI)
+    gui.db_config = {"enabled": False}
+    gui.archive_dir = tmp_path / "archive"
+    gui.root = ImmediateRoot()
+    gui.processing = True
+    gui.watch_queue = []
+    gui.update_status = Mock()
+    gui.update_progress = Mock()
+    gui.update_ui_state = Mock()
+    gui._process_watch_queue = Mock()
+    gui._append_processing_log = Mock()
+    gui.show_toast = Mock()
+    gui.show_message = Mock()
+    receipt_pdf = tmp_path / "receipt.pdf"
+    receipt_pdf.write_text("pdf")
+    receipt = {
+        "employee_name": "Synthetic Employee",
+        "amount": 900.0,
+        "paid_date": datetime.date(2026, 4, 5),
+        "payroll_year": 2026,
+        "payroll_month": 3,
+    }
+    merge_calls = []
+    monkeypatch.setattr(payroll_gui.process_payroll, "parse_transfer_receipt", lambda path: receipt)
+    monkeypatch.setattr(
+        payroll_gui.process_payroll,
+        "_archive_pdf_for_receipt",
+        lambda *args, **kwargs: {"path": "receipt.pdf", "copied": True},
+    )
+    monkeypatch.setattr(
+        payroll_gui.process_payroll,
+        "_merge_receipts_after_archiving",
+        lambda archive_root, receipts: merge_calls.append((archive_root, list(receipts))),
+    )
+
+    gui.process_files("summary.xlsx", "detail.xlsx", [str(receipt_pdf)])
+
+    assert merge_calls == [(str(gui.archive_dir), [receipt])]

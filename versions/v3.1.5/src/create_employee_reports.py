@@ -66,10 +66,23 @@ def prepare_summary(df: pd.DataFrame) -> pd.DataFrame:
     """
     if df.empty:
         return df
+    df = df.copy()
+    # A parser can recover the employee code even when the name is absent.
+    # Keep that valid payroll row and give it a stable workbook label instead
+    # of letting pandas groupby silently drop its null key.
+    employee_codes = df['EmployeeCode'].fillna('Unknown').astype(str).str.strip()
+    employee_codes = employee_codes.mask(employee_codes == '', 'Unknown')
+    if 'EmployeeName' not in df.columns:
+        df['EmployeeName'] = ''
+    employee_names = df['EmployeeName'].fillna('').astype(str).str.strip()
+    df['EmployeeName'] = employee_names.mask(
+        employee_names == '',
+        'Employee ' + employee_codes,
+    )
     # Make sure Date is parsed and month extracted
     # Some dates may be missing; coerce errors to NaT
     df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce')
-    df['Month'] = df['Date'].dt.to_period('M').astype(str)
+    df['Month'] = df['Date'].dt.to_period('M').astype('string')
     # For rows with no date, assign 'Unknown'
     df['Month'] = df['Month'].fillna('Unknown')
     # Ensure numeric fields exist and fill NaN with zero
@@ -144,12 +157,12 @@ def _unique_sheet_name(name, used_names):
     base = name[:max_len]
     candidate = base
     counter = 2
-    while candidate in used_names:
+    while candidate.casefold() in used_names:
         suffix = f" ({counter})"
         trim_len = max_len - len(suffix)
         candidate = f"{base[:trim_len]}{suffix}"
         counter += 1
-    used_names.add(candidate)
+    used_names.add(candidate.casefold())
     return candidate
 
 
@@ -194,7 +207,10 @@ def write_detail_report(detail_df: pd.DataFrame, out_xlsx: str) -> None:
         money_fmt = workbook.add_format({'num_format': '#,##0.00'})
 
         for col_idx, col_name in enumerate(df.columns):
-            max_len = max(df[col_name].astype(str).map(len).max(), len(col_name)) + 2
+            display_lengths = df[col_name].map(
+                lambda value: 0 if pd.isna(value) else len(str(value))
+            )
+            max_len = max(display_lengths.max(), len(col_name)) + 2
             fmt = money_fmt if col_name in numeric_cols else None
             worksheet.set_column(col_idx, col_idx, max_len, fmt)
             worksheet.write(0, col_idx, col_name, header_fmt)

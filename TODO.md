@@ -39,18 +39,12 @@ for the release entry and [CONTRIBUTING.md](CONTRIBUTING.md) for how to extend i
   archived file, so nothing is lost.
 - `fetch_signed_status_summary` reports fully / partially / unsigned per month.
 
-### Known defects, pinned by tests but not yet fixed
+### Helper defects fixed in v3.1.5
 
-Both are pinned in `versions/v3.1.5/tests/test_payroll_gui_helpers.py` with
-`KNOWN DEFECT` docstrings, so fixing either will deliberately fail its test.
-
-- `_validate_grid_edit` accepts only a lowercase `document_type` vocabulary and
-  never case-folds, while `process_payroll` writes `Salary`, `Bonus` and
-  `VacationAllowance`. Retyping the value the grid displays is rejected.
-- `_parse_numeric` treats a comma as a decimal separator whenever no dot is
-  present, so `"1,000"` parses as `1.0`. The app's own formatter always emits
-  two decimals and round-trips safely; the exposure is externally formatted
-  text reaching `_build_export_totals`.
+- Grid edits now accept stored canonical document types and common lowercase,
+  snake-case and hyphenated aliases, then return the canonical stored value.
+- Numeric parsing now handles comma thousands separators and mixed European
+  thousands/decimal separators without understating values.
 
 ### Not started
 
@@ -89,47 +83,75 @@ The Insurance disabled branch calls `_database_notice`, but the live v3.1.4 page
 
 ### QA audit — 2026-08-25: processing and exports
 
-- [ ] Bug 5 — HIGH: colliding ZIP names can duplicate payroll records across a batch
+- [x] Bug 5 — HIGH: colliding ZIP names can duplicate payroll records across a batch
 **File:** `versions/v3.1.5/src/process_payroll.py:629`
 `rstrip('.zip')` removes any trailing combination of those four characters, so
 `pay.zip` and `payz.zip` share one extraction directory. The second archive then
 reprocesses the first archive's stale PDF. A synthetic two-ZIP run returned
 `['second', 'first']` for the second archive.
 > **Tell dev:** "Give every `process_zip` call a fresh extraction directory under the supplied temporary root, use `Path(zip_path).stem` only as a readable prefix, and add a two-archive collision regression."
+> **Fixed in v3.1.5:** each archive now gets a unique `mkdtemp` extraction path;
+> the two-archive regression and an isolated CLI run both produced exactly one
+> record per ZIP.
 
-- [ ] Bug 6 — HIGH: next-month receipts do not merge into their payroll-period PDFs
+- [x] Bug 6 — HIGH: next-month receipts do not merge into their payroll-period PDFs
 **File:** `versions/v3.1.5/src/process_payroll.py:460`
 Receipt parsing retains `payroll_year` and `payroll_month`, but archiving and
 lookup use only `paid_date`. A receipt paid in April for March payroll was filed
 under April and found no March payment PDF.
 > **Tell dev:** "Use one receipt-period helper that prefers parsed payroll year/month and falls back to paid date, then use it for both receipt archiving and monthly-PDF lookup."
+> **Fixed in v3.1.5:** archiving and lookup share a payroll-period-first helper;
+> a real April-paid March receipt was archived and merged under `2026/03`.
 
-- [ ] Bug 7 — MEDIUM: standalone receipt PDFs are archived but never merged
+- [x] Bug 7 — MEDIUM: standalone receipt PDFs are archived but never merged
 **File:** `versions/v3.1.5/src/process_payroll.py:715`
 The ZIP path calls `_merge_receipts_after_archiving`; `process_pdf_file` returns
 immediately after archiving a receipt, and the GUI's direct-PDF path similarly
 continues at `payroll_gui.py:7729`. Synthetic instrumentation recorded one
 receipt and zero merge calls.
 > **Tell dev:** "Route ZIP and standalone receipt handling through one archive-and-merge helper and keep the merged/skipped targets in the processing log."
+> **Fixed in v3.1.5:** both the engine and direct-PDF GUI path invoke receipt
+> merging and report merged/skipped targets in the processing log.
 
-- [ ] Bug 8 — HIGH: CLI reports success after deleting its temporary CSVs
+- [x] Bug 8 — HIGH: CLI reports success after deleting its temporary CSVs
 **File:** `versions/v3.1.5/src/payroll_cli.py:201`
 The CLI writes intermediate CSVs inside `TemporaryDirectory`, exits that
 context, and only then loads them at line 248. A valid synthetic payroll row
 returned exit code 0, printed `No valid payroll data found`, and created zero
 workbooks.
 > **Tell dev:** "Load and write the reports before leaving `TemporaryDirectory`, and add an unmocked CSV-lifetime regression that asserts both workbooks and a successful ledger entry exist."
+> **Fixed in v3.1.5:** temporary CSVs are loaded inside their lifetime; the
+> regression and isolated wrapper run produced both workbooks and a success ledger.
 
-- [ ] Bug 9 — HIGH: employee sheet names that differ only by case abort export
+- [x] Bug 9 — HIGH: employee sheet names that differ only by case abort export
 **File:** `versions/v3.1.5/src/create_employee_reports.py:142`
 The uniqueness set is case-sensitive while Excel sheet names are not. Synthetic
 employees `Alice (E1)` and `alice (E1)` reproduced XlsxWriter's
 `DuplicateWorksheetName` and aborted the workbook.
 > **Tell dev:** "Track sheet-name uniqueness with `casefold()` while preserving the display spelling, and add a case-collision workbook regression."
+> **Fixed in v3.1.5:** worksheet names are tracked with `casefold()` and the
+> case-collision workbook regression completes successfully.
 
-- [ ] Bug 10 — HIGH: rows with a missing employee name vanish from the summary
+- [x] Bug 10 — HIGH: rows with a missing employee name vanish from the summary
 **File:** `versions/v3.1.5/src/create_employee_reports.py:86`
 The parser permits `EmployeeName=None`, but pandas' default groupby drops null
 group keys. One otherwise valid synthetic payroll row produced zero summary
 rows and therefore no employee sheet.
 > **Tell dev:** "Fill a stable employee-name fallback before grouping, or group with `dropna=False`, and assert that a code-only payroll row survives into both summary and detail reports."
+> **Fixed in v3.1.5:** blank names receive a stable employee-code label before
+> grouping; missing dates are also labelled `Unknown` instead of `NaT`.
+
+- [x] Bug 11 — HIGH: detail workbook crashes on missing numeric values
+**File:** `versions/v3.1.5/src/create_employee_reports.py`
+Pandas 3.0 can retain missing numeric cells as floats while sizing worksheet
+columns. Applying `len()` to those values raised `TypeError` after the summary
+workbook had already been created.
+> **Fixed in v3.1.5:** display widths now treat missing cells as empty; the real
+> multi-ZIP CLI run produced valid summary and detail XLSX files.
+
+- [x] Bug 12 — MEDIUM: employee names containing "Receipt" prevent receipt merge
+**File:** `versions/v3.1.5/src/process_payroll.py`
+Receipt lookup excluded every filename containing the word `receipt`, including
+ordinary payroll PDFs for an employee such as `Receipt Employee`.
+> **Fixed in v3.1.5:** lookup excludes the exact archived receipt and generated
+> receipt suffix, not arbitrary employee-name text; a real two-page PDF merge passed.

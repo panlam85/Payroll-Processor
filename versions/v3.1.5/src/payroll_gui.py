@@ -3772,10 +3772,20 @@ class PayrollProcessorGUI:
                 return False, value, "Use YYYY-MM-DD for dates."
             return True, parsed, ""
         if col_name == "document_type":
-            allowed = {"salary", "bonus", "vacation_allowance", "unused_leave_compensation", "other"}
-            if value not in allowed:
-                return False, value, f"Document type must be one of: {', '.join(sorted(allowed))}."
-            return True, value, ""
+            canonical_types = {
+                "salary": "Salary",
+                "bonus": "Bonus",
+                "vacationallowance": "VacationAllowance",
+                "unusedleavecompensation": "UnusedLeaveCompensation",
+                "payslip": "Payslip",
+                "other": "Other",
+            }
+            normalized = re.sub(r"[\s_-]+", "", value).casefold()
+            canonical = canonical_types.get(normalized)
+            if canonical is None:
+                allowed = sorted(canonical_types.values())
+                return False, value, f"Document type must be one of: {', '.join(allowed)}."
+            return True, canonical, ""
         if col_name == "paid_status":
             normalized = value.strip().lower()
             truthy = {"yes", "true", "1", "paid"}
@@ -4750,10 +4760,34 @@ class PayrollProcessorGUI:
         for symbol in ("€", "$"):
             text = text.replace(symbol, "")
         text = text.replace(" ", "")
-        if text.count(",") > 0 and text.count(".") == 0:
-            text = text.replace(",", ".")
-        else:
-            text = text.replace(",", "")
+        comma_count = text.count(",")
+        dot_count = text.count(".")
+        if comma_count and dot_count:
+            if text.rfind(",") > text.rfind("."):
+                text = text.replace(".", "").replace(",", ".")
+            else:
+                text = text.replace(",", "")
+        elif comma_count == 1:
+            whole, fractional = text.split(",", 1)
+            whole_digits = whole.lstrip("+-")
+            if whole_digits != "0" and whole_digits.isdigit() and len(fractional) == 3 and fractional.isdigit():
+                text = whole + fractional
+            else:
+                text = whole + "." + fractional
+        elif comma_count > 1:
+            groups = text.split(",")
+            if not groups[0].lstrip("+-").isdigit() or not all(
+                group.isdigit() and len(group) == 3 for group in groups[1:]
+            ):
+                return None
+            text = "".join(groups)
+        elif dot_count > 1:
+            groups = text.split(".")
+            if not groups[0].lstrip("+-").isdigit() or not all(
+                group.isdigit() and len(group) == 3 for group in groups[1:]
+            ):
+                return None
+            text = "".join(groups)
         try:
             return float(text)
         except ValueError:
@@ -7726,6 +7760,14 @@ class PayrollProcessorGUI:
                                 receipt["archive_copied"] = archive_info["copied"]
                                 archive_note = "stored" if archive_info["copied"] else "exists"
                                 log_lines.append(f"Receipt archived ({archive_note}): {archive_info['path']}")
+                                process_payroll._merge_receipts_after_archiving(
+                                    str(self.archive_dir),
+                                    [receipt],
+                                )
+                                for target in receipt.get("merged_into", []):
+                                    log_lines.append(f"Receipt merged into: {target}")
+                                for target in receipt.get("merge_skipped", []):
+                                    log_lines.append(f"Receipt merge skipped: {target}")
                                 continue
                             pdf_result = process_payroll.process_pdf_file(file_path, temp_dir, archive_root=str(self.archive_dir))
                             if isinstance(pdf_result, tuple):

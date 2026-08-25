@@ -55,3 +55,53 @@ def test_unique_sheet_name_dedupes_with_suffix():
     assert second.startswith("Employee (1)")
     assert second != first
     assert len(second) <= 31
+
+
+def test_unique_sheet_name_is_case_insensitive_like_excel():
+    used = set()
+    first = create_employee_reports._unique_sheet_name("Alice (E1)", used)
+    second = create_employee_reports._unique_sheet_name("alice (E1)", used)
+
+    assert first == "Alice (E1)"
+    assert second.casefold() != first.casefold()
+    assert len(second) <= 31
+
+
+def test_prepare_summary_keeps_code_only_employee():
+    df = pd.DataFrame(
+        [
+            {
+                "EmployeeCode": "E1",
+                "EmployeeName": None,
+                "Date": "01/01/2026",
+                "DocumentType": "Salary",
+                "BasicSalary": 1000,
+                "TotalEarnings": 1200,
+                "NetPay": 900,
+            }
+        ]
+    )
+
+    summary = create_employee_reports.prepare_summary(df)
+
+    assert len(summary) == 2
+    assert set(summary["EmployeeName"]) == {"Employee E1"}
+    assert set(summary["DocumentType"]) == {"Salary", "Total"}
+
+
+def test_prepare_summary_labels_missing_date_as_unknown_month():
+    df = pd.DataFrame(
+        [
+            {
+                "EmployeeCode": "E1",
+                "EmployeeName": "Synthetic Employee",
+                "Date": None,
+                "DocumentType": "Salary",
+                "NetPay": 900,
+            }
+        ]
+    )
+
+    summary = create_employee_reports.prepare_summary(df)
+
+    assert set(summary["Month"]) == {"Unknown"}

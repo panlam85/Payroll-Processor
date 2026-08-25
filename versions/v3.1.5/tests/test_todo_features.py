@@ -390,6 +390,43 @@ def test_find_monthly_payment_pdfs_excludes_receipts(tmp_path):
     assert names == ["2603_Some_Employee_Bonus.pdf", "2603_Some_Employee_Salary.pdf"]
 
 
+def test_receipt_archive_and_lookup_prefer_payroll_period(tmp_path):
+    archive_root, emp_dir = _make_archive(tmp_path, year=2026, month=3)
+    salary = emp_dir / "2603_Some_Employee_Salary.pdf"
+    salary.write_bytes(b"%PDF-1.4\n")
+    source = tmp_path / "receipt.pdf"
+    source.write_bytes(b"%PDF-1.4\n")
+    receipt = {
+        "employee_name": "Some Employee",
+        "paid_date": datetime.date(2026, 4, 5),
+        "payroll_year": 2026,
+        "payroll_month": 3,
+    }
+
+    archived = process_payroll._archive_pdf_for_receipt(str(archive_root), str(source), receipt)
+    found = process_payroll.find_monthly_payment_pdfs(str(archive_root), receipt)
+
+    assert os.path.relpath(archived["path"], archive_root).startswith("2026/03/")
+    assert found == [str(salary)]
+
+
+def test_receipt_lookup_does_not_confuse_employee_name_with_receipt_marker(tmp_path):
+    archive_root, emp_dir = _make_archive(tmp_path, employee="Receipt Employee")
+    salary = emp_dir / "2603_Receipt_Employee.pdf"
+    salary.write_bytes(b"%PDF-1.4\n")
+    receipt_path = emp_dir / "2603_Receipt_Employee_Receipt_receipt.pdf"
+    receipt_path.write_bytes(b"%PDF-1.4\n")
+    receipt = {
+        "employee_name": "Receipt Employee",
+        "paid_date": datetime.date(2026, 3, 15),
+        "archive_path": str(receipt_path),
+    }
+
+    found = process_payroll.find_monthly_payment_pdfs(str(archive_root), receipt)
+
+    assert found == [str(salary)]
+
+
 def test_find_monthly_payment_pdfs_needs_a_date(tmp_path):
     archive_root, _ = _make_archive(tmp_path)
     assert process_payroll.find_monthly_payment_pdfs(

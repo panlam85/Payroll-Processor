@@ -63,10 +63,10 @@ The v3.1.3 release adds a single CLI entry point that can both run processing an
 
 ### **Tests:**
 ```bash
-versions/v3.1.5/.venv/bin/python -m pytest -q                    # 303 tests
+versions/v3.1.5/.venv/bin/python -m pytest -q                    # 322 tests
 versions/v3.1.5/.venv/bin/python -m pytest -q --cov --cov-config=.coveragerc
 ```
-Coverage gate is 65%; the parsing/storage/CLI core currently sits at ~94.7%. `payroll_gui.py` is excluded from the gate; its display-independent helpers are covered by `tests/test_payroll_gui_helpers.py`.
+Coverage gate is 65%; the parsing/storage/CLI core currently sits at 94.47%. `payroll_gui.py` is excluded from the gate; its display-independent helpers are covered by `tests/test_payroll_gui_helpers.py`.
 
 ## 🚀 How to Use
 
