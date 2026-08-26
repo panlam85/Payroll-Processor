@@ -3,6 +3,17 @@
 Everything previously listed here shipped in v3.1.4. See [CHANGELOG.md](CHANGELOG.md)
 for the release entry and [CONTRIBUTING.md](CONTRIBUTING.md) for how to extend it.
 
+### Delivered in v3.1.7
+
+- Sub-second native first paint through deferred processing/chart imports,
+  lazy screen construction and background database maintenance.
+- Active-screen-only filter refresh instead of the previous all-view query
+  cascade.
+- Modern payroll-specific navigation, typography, light/dark palette and the
+  Sources → Check → Reports processing runway.
+- ARM64-native execution verification and dedicated performance-architecture
+  regression tests.
+
 ### Delivered in v3.1.4
 
 **Time comparisons**

@@ -2,6 +2,46 @@
 
 All notable changes to this project are documented here. Newer entries go to the top.
 
+## v3.1.7 — 2026-08-26
+
+**Fast startup and responsive navigation**
+- Deferred pandas, payroll parsing and Matplotlib until their features are
+  opened. A clean import now takes about 0.09 seconds instead of 3–8 seconds.
+- Built only the Processing screen at startup and lazy-loaded the seven
+  secondary views. Repeat native first-paint measurements fell from roughly
+  10–12 seconds to 0.45–0.51 seconds.
+- Removed synchronous database migrations from startup, added a short database
+  connection timeout, and moved schema maintenance and available-year lookups
+  to background workers.
+- Filter and search changes now refresh only the visible screen instead of
+  triggering every dashboard, chart, grid, insurance and employee query.
+- Kept charts on demand: opening all fourteen analytics charts adds about 0.6
+  seconds once, rather than charging that cost on every app launch.
+
+**Modern payroll workspace**
+- Replaced the boxed legacy navigation with a flat 224px navy rail, grouped as
+  Primary, Records, Insights and System, with a persistent version marker.
+- Made Process Payroll the default workspace and introduced a three-stage
+  `Sources → Check → Reports` run rail that tracks the real report workflow.
+- Rebuilt the source-document area, readiness banner, run status and progress
+  surfaces around a restrained payroll palette: ink navy, ledger teal,
+  approval mint and warning amber.
+- Standardized SF Pro Display/Text/Mono typography, larger page hierarchy,
+  taller controls and tables, cleaner inputs, subtle borders and consistent
+  light/dark surfaces. Global filters now stay out of Processing and Settings.
+- Removed startup decoding of the old raster navigation icon set; the branded
+  app icon is applied after first paint.
+
+**Release and regression safety**
+- Added architecture regressions for deferred imports, one-time view building,
+  active-view-only refresh and database connection timeout.
+- Kept v3.1.6 frozen and preserved the opt-in isolated QA data root for
+  side-by-side testing with older installed versions.
+- Verified the development runtime executes natively as ARM64 on Apple silicon;
+  the distributable remains Universal for ARM64 and Intel Macs.
+- Verified 352 passing tests across processing, storage, CLI, exports, GUI
+  helpers and release scripts.
+
 ## v3.1.6 — 2026-08-25
 
 **Processing correctness and identity**

@@ -116,8 +116,8 @@ version.
 ```
 PayrollProcessor/
 ├── versions/
-│   ├── v1.0/ … v3.1.5/     # frozen historical releases
-│   └── v3.1.6/             # active codebase
+│   ├── v1.0/ … v3.1.6/     # frozen historical releases
+│   └── v3.1.7/             # active codebase
 ├── launch_gui.sh           # → versions/<active>/scripts/launch_gui.sh
 ├── run_dev.sh              # → versions/<active>/scripts/run_dev.sh
 ├── payroll_cli.sh          # → versions/<active>/scripts/payroll_cli.sh
@@ -149,12 +149,12 @@ directory; older versions are history and should not be edited.
 ### Tests
 
 ```bash
-versions/v3.1.6/.venv/bin/python -m pytest -q                                    # 349 tests
-versions/v3.1.6/.venv/bin/python -m pytest -q --cov --cov-config=.coveragerc     # with the gate
+versions/v3.1.7/.venv/bin/python -m pytest -q                                    # 352 tests
+versions/v3.1.7/.venv/bin/python -m pytest -q --cov --cov-config=.coveragerc     # with the gate
 ```
 
 The coverage gate is 65%. The parsing, storage, and CLI core currently sits at
-**93.26%**:
+**93.41%**:
 
 | Module | Coverage |
 |---|---|
