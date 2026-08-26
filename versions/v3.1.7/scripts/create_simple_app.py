@@ -1044,6 +1044,7 @@ elif [ -d "$RESOURCES_DIR/Python.framework" ]; then
 fi
 
 export PYTHONPATH="$RESOURCES_DIR:$PYTHONPATH"
+export PYTHONDONTWRITEBYTECODE=1
 export TK_APP_NAME="Payroll Processor"
 
 # Launch the GUI (capture output to a log so Finder launch errors are visible)

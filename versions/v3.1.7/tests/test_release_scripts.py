@@ -102,6 +102,12 @@ def test_bundle_launcher_uses_the_bundled_python_standard_library():
     assert builder.count('export PYTHONHOME="$PY_FRAMEWORK"') == 2
 
 
+def test_bundle_launcher_does_not_mutate_the_signed_app_with_bytecode_caches():
+    builder = (SCRIPTS_DIR / "create_simple_app.py").read_text(encoding="utf-8")
+
+    assert 'export PYTHONDONTWRITEBYTECODE=1' in builder
+
+
 def test_installer_always_rebuilds_the_selected_version():
     installer = (SCRIPTS_DIR / "create_simple_installer.sh").read_text(encoding="utf-8")
 

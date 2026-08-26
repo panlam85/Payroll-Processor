@@ -39,8 +39,10 @@ All notable changes to this project are documented here. Newer entries go to the
   side-by-side testing with older installed versions.
 - Verified the development runtime executes natively as ARM64 on Apple silicon;
   the distributable remains Universal for ARM64 and Intel Macs.
-- Verified 352 passing tests across processing, storage, CLI, exports, GUI
+- Verified 354 passing tests across processing, storage, CLI, exports, GUI
   helpers and release scripts.
+- Prevented Finder launches from writing Python bytecode caches into the signed
+  app bundle, preserving code-signature validity after use.
 
 ## v3.1.6 — 2026-08-25
 

@@ -149,7 +149,7 @@ directory; older versions are history and should not be edited.
 ### Tests
 
 ```bash
-versions/v3.1.7/.venv/bin/python -m pytest -q                                    # 352 tests
+versions/v3.1.7/.venv/bin/python -m pytest -q                                    # 354 tests
 versions/v3.1.7/.venv/bin/python -m pytest -q --cov --cov-config=.coveragerc     # with the gate
 ```
 
