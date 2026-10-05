@@ -97,6 +97,11 @@ CREATE TABLE IF NOT EXISTS documents (
     UNIQUE (payroll_entry_id)
 );
 
+CREATE TABLE IF NOT EXISTS alert_acknowledgements (
+    alert_key TEXT PRIMARY KEY,
+    acknowledged_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE INDEX IF NOT EXISTS idx_payroll_entries_employee
     ON payroll_entries(employee_id);
 

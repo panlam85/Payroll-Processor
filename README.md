@@ -32,7 +32,8 @@ compensation, and EFKA/TEKA insurance claims.
 - Employer cost per euro of take-home pay, tracked over time
 - Sudden-jump detection comparing each employee against their own prior month
 - Insurance tab comparing calculated against official EFKA/TEKA figures
-- Employee profiles with monthly totals, pay rates, and payment history
+- Employee workspace with Monthly payroll, Profile and Payment history tabs;
+  select a year and month to see totals, payment status, insurance and payslips
 
 **Output**
 - Per-employee Excel summary workbook plus an analytical detail workbook
@@ -46,6 +47,11 @@ compensation, and EFKA/TEKA insurance claims.
 - Light / dark / auto appearance
 
 ---
+
+In **Overview → Alerts**, select reviewed alerts and click **Acknowledge selected**.
+They stay hidden after refresh and restart. Enable **Show acknowledged** to review
+them again and use **Restore selected** to return them to the active list.
+Double-click an alert to open its payroll details.
 
 ## Requirements
 
@@ -117,7 +123,7 @@ version.
 PayrollProcessor/
 ├── versions/
 │   ├── v1.0/ … v3.1.6/     # frozen historical releases
-│   └── v3.1.7/             # active codebase
+│   └── v3.1.9/             # active codebase
 ├── launch_gui.sh           # → versions/<active>/scripts/launch_gui.sh
 ├── run_dev.sh              # → versions/<active>/scripts/run_dev.sh
 ├── payroll_cli.sh          # → versions/<active>/scripts/payroll_cli.sh
@@ -139,7 +145,7 @@ Core modules live in `versions/<active>/src/`:
 ### Cutting a new version
 
 ```bash
-./bump_version.sh v3.1.7
+./bump_version.sh v3.1.9
 ```
 
 This copies the active tree and repoints the root wrappers, `AGENTS.md`,
@@ -149,19 +155,19 @@ directory; older versions are history and should not be edited.
 ### Tests
 
 ```bash
-versions/v3.1.7/.venv/bin/python -m pytest -q                                    # 354 tests
-versions/v3.1.7/.venv/bin/python -m pytest -q --cov --cov-config=.coveragerc     # with the gate
+versions/v3.1.9/.venv/bin/python -m pytest -q                                    # 380 tests
+versions/v3.1.9/.venv/bin/python -m pytest -q --cov --cov-config=.coveragerc     # with the gate
 ```
 
-The coverage gate is 65%. The parsing, storage, and CLI core currently sits at
-**93.41%**:
+The coverage gate is 65%. The full local v3.1.9 suite passes with **86.06%**
+coverage, including the employee workspace logic:
 
 | Module | Coverage |
 |---|---|
 | `create_employee_reports.py` | 99% |
 | `process_payroll.py` | 95% |
 | `payroll_cli.py` | 92% |
-| `db_storage.py` | 92% |
+| `db_storage.py` | 91% |
 
 `payroll_gui.py` is excluded from the gate — most of it is widget construction
 and event wiring that needs a display. Its display-independent logic

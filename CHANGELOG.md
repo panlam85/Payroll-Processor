@@ -2,6 +2,45 @@
 
 All notable changes to this project are documented here. Newer entries go to the top.
 
+## v3.1.9 — 2026-10-05
+
+**EFKA submission recognition**
+- Recognize submission PDFs with mixed-case or accented Greek labels, including
+  “Περίοδος Από”, and labels separated from values by line breaks or colons.
+- Read payment references labeled simply “RF”, preserving the full reference
+  while removing grouping spaces. Existing payment-reference labels still work.
+- Preserve EFKA/TEKA classification and the distinction between insurance
+  submissions and employee payslips in both direct PDF and ZIP imports.
+- Verified the supplied June 2026 document through parsing, archiving and
+  repeat import, plus 380 tests. v3.1.8 remains frozen.
+
+## v3.1.8 — 2026-10-04
+
+**Acknowledged alerts**
+- Added multi-select acknowledgement in Overview → Alerts. Reviewed alerts
+  stay hidden after refresh, filter changes and app restarts.
+- Added Show acknowledged and Restore selected, keeping the review reversible.
+- Saved acknowledgements in PostgreSQL so database backups carry them forward.
+  Alert identities use entry IDs or employee code/document/month rather than names.
+- Kept new alerts visible even when previously reviewed alerts would have filled
+  the old query limit. Double-clicking an alert opens its payroll details.
+- Verified 371 passing tests and live save/reload/restore queries in a rolled-back
+  transaction.
+
+**Employee monthly workspace**
+- Reorganized Employees into Monthly payroll, Profile and Payment history tabs.
+- Added a year selector and selectable monthly totals. Each month opens its
+  individual payslips alongside net pay, paid, due and insurance totals.
+- Showed gross pay, payment dates, payment status, insurance and source-document
+  references in the monthly detail table, with scrolling for narrower windows.
+- Used the same complete set of employee entries for monthly totals and detail;
+  preserved exact decimal amounts and included entries without attachments.
+- Moved employee queries off the UI thread, debounced search, preserved selection
+  on refresh and discarded superseded requests when switching employees.
+- Kept v3.1.7 frozen.
+- Checked the new totals against independent
+  queries over the local restored database.
+
 ## v3.1.7 — 2026-08-26
 
 **Fast startup and responsive navigation**

@@ -7,23 +7,31 @@
   - Detail workbook: every payroll entry in a single table.
 
 ## Current active version
-- Active code lives in `versions/v3.1.7/`.
-- Root scripts (`launch_gui.sh`, `run_dev.sh`, `create_simple_app.py`, `create_simple_installer.sh`) delegate to `versions/v3.1.7`.
+- Active code lives in `versions/v3.1.9/`.
+- Root scripts (`launch_gui.sh`, `run_dev.sh`, `create_simple_app.py`, `create_simple_installer.sh`) delegate to `versions/v3.1.9`.
 - Older versions are kept for history; do not edit them unless asked.
 
 ## Key files and responsibilities
-- `versions/v3.1.7/src/payroll_gui.py`
+- `versions/v3.1.9/src/dashboard_alerts.py`
+  - Stable alert identities, selection, acknowledgement and restoration controls.
+  - Reviewed alerts are saved in the database's `alert_acknowledgements` table.
+- `versions/v3.1.9/src/employee_workspace.py`
+  - Employees view: Monthly payroll, Profile and Payment history tabs.
+  - Queries run asynchronously; monthly totals and detail share the same rows.
+- `versions/v3.1.9/src/employee_months.py`
+  - Decimal monthly aggregation by payslip date, without row limits.
+- `versions/v3.1.9/src/payroll_gui.py`
   - GUI, menus, and report orchestration.
   - Controls save locations and spawns the processing thread.
-- `versions/v3.1.7/src/process_payroll.py`
+- `versions/v3.1.9/src/process_payroll.py`
   - Extracts PDFs from ZIPs and parses payroll fields.
   - Document type classifier defaults to "Salary".
-- `versions/v3.1.7/src/create_employee_reports.py`
+- `versions/v3.1.9/src/create_employee_reports.py`
   - Builds summary workbook.
   - Builds detail workbook (every row).
-- `versions/v3.1.7/scripts/launch_gui.sh`
+- `versions/v3.1.9/scripts/launch_gui.sh`
   - Production-style launcher; caches pip installs via a requirements hash.
-- `versions/v3.1.7/scripts/run_dev.sh`
+- `versions/v3.1.9/scripts/run_dev.sh`
   - Dev launcher with the same environment setup.
 
 ## How the data flows
@@ -49,7 +57,7 @@
 - Build installer: `./create_simple_installer.sh`
 
 ## Coding tips
-- Keep changes inside `versions/v3.1.7` unless the user asks for a new version.
+- Keep changes inside `versions/v3.1.9` unless the user asks for a new version.
 - Use `./bump_version.sh vX.Y.Z` to create a new version with real copied tests (no symlinks) and update root wrappers.
 - Update the root wrappers if a new version becomes active.
 - For GUI tweaks, check macOS menu behavior (`tk::mac::setmenuname` and `tkAboutDialog`).
