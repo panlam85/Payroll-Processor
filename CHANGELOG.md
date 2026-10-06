@@ -2,6 +2,66 @@
 
 All notable changes to this project are documented here. Newer entries go to the top.
 
+## v3.1.11 — 2026-10-06
+
+- Bundle PostgreSQL 18, its libraries, schema and backup/restore tools in the Mac app.
+  New installations create and start their local database automatically.
+- Keep existing database connections unchanged. Use a private per-user Unix socket
+  with peer authentication and no TCP listener for app-managed databases.
+- Keep data outside the app bundle. Preserve it across restarts and app replacements;
+  stop the private server when its last app/CLI client exits.
+- Add a simple local-database status dialog, retryable setup and atomic config saves.
+  Refuse incompatible PostgreSQL major-version data without altering it.
+- Verify 442 tests, including isolated first-run, backup/restore, restart and
+  multi-instance lifecycle checks. Current local build: Apple Silicon, macOS 26+.
+
+## v3.1.10 — 2026-10-06
+
+- Match the Analytics toolbar and closing automatic-backup dialog backgrounds
+  to the application theme, removing the default grey patches behind labels.
+
+**Document-type editing**
+- Normalize grid edits and legacy undo values to the database enum spellings.
+  Unused leave compensation and every other listed type now save correctly.
+
+**Employee management**
+- Show a full-width employee directory; clicking a name slides open payroll,
+  profile and payment history. Return to the list with selection intact.
+- Delete incorrect OCR profiles after reviewing linked records. Require explicit
+  consent for linked payroll, retain audit snapshots and PDFs, reject stale
+  reviews, and protect profiles with merge history or import aliases.
+- Sort employees by code or name in either direction; preserve the selection and
+  sort order across refreshes. Numeric sorting keeps leading-zero codes distinct.
+- ⌘-click two employees to enable Merge, then choose which code to keep.
+  Load the payroll summary automatically and confirm with the direction-labelled button.
+- Pick employment start/end dates from calendars, with month/year navigation,
+  Today, and an Ongoing option for open-ended employment.
+- Review and confirm employee merges with payroll counts, combined net pay,
+  overlapping-payslip warnings and profile conflicts. Keep all payroll IDs,
+  payments, insurance and source documents; preserve prior data in a merge audit.
+- Resolve old employee codes to the retained profile on subsequent imports and
+  in newly generated reports, preventing merged profiles from reappearing.
+- Add editable employment periods, inclusive end dates and rehire gaps. Active
+  employees overlap the selected period, or today without a period filter.
+  Keep existing employees visible as Dates not set until reviewed.
+- Guard changes with edit permissions, transaction rollback and stale-preview
+  checks. Verify 428 tests including fourteen isolated PostgreSQL integration tests.
+
+**Sliding workspace filters**
+
+- Move filters into the content workspace beside the sidebar, with a sliding
+  overlay and an always-visible summary of the applied period, document and search.
+- Add named months, From/Through labels, readable document names and quick choices
+  for all time, this month, last month and this year. The drawer scrolls independently in smaller windows.
+- Repair saved half-ranges so a selected year cannot silently mean all dates;
+  retain explicitly selected periods even when they contain no imported data.
+- Move the editing lock to a labeled sidebar checkbox and hide global filters on
+  the Database screen, which has its own independent filter.
+- Verify 395 tests, including date bounds, leap years, period presets and stored
+  document values; verify opening/closing the drawer leaves table geometry unchanged.
+- Dismiss the drawer with Close, Show results, Escape or a click outside; keep
+  the active filter choices when closing it or switching views.
+
 ## v3.1.9 — 2026-10-05
 
 **EFKA submission recognition**

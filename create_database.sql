@@ -148,3 +148,33 @@ JOIN payroll_entries pe ON pe.payroll_run_id = pr.id
 JOIN employees e ON e.id = pe.employee_id
 JOIN insurance_contributions ic ON ic.payroll_entry_id = pe.id
 GROUP BY pr.year, pr.month, e.full_name;
+
+-- Employee identity aliases, employment periods and merge audit.
+
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS merged_into UUID REFERENCES employees(id);
+CREATE TABLE IF NOT EXISTS employee_employment_periods (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    employee_id UUID NOT NULL REFERENCES employees(id),
+    start_date DATE NOT NULL,
+    end_date DATE,
+    CHECK (end_date IS NULL OR end_date >= start_date),
+    UNIQUE (employee_id, start_date)
+);
+CREATE INDEX IF NOT EXISTS idx_employee_periods ON employee_employment_periods(employee_id);
+CREATE TABLE IF NOT EXISTS employee_merge_history (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    source_employee_id UUID NOT NULL REFERENCES employees(id),
+    target_employee_id UUID NOT NULL REFERENCES employees(id),
+    snapshot JSONB NOT NULL,
+    merged_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    merged_by TEXT
+);
+
+-- Audit snapshots for explicitly deleted OCR-created employees.
+CREATE TABLE IF NOT EXISTS employee_deletion_history (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    employee_code TEXT NOT NULL,
+    snapshot JSONB NOT NULL,
+    deleted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_by TEXT
+);

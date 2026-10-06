@@ -33,28 +33,28 @@ The v3.1.3 release adds a single CLI entry point that can both run processing an
 
 ### **Versioned Source Tree**
 - `versions/v1.0/` … `versions/v3.1.5/` – frozen historical iterations, retained for reference
-- `versions/v3.1.9/` – **active** source, scripts, docs and resources
-- Root-level helper scripts (`launch_gui.sh`, `run_dev.sh`, `payroll_cli.sh`, `create_simple_app.py`, `create_simple_installer.sh`) delegate to `versions/v3.1.9` so you always run the latest code while keeping older releases intact.
+- `versions/v3.1.11/` – **active** source, scripts, docs and resources
+- Root-level helper scripts (`launch_gui.sh`, `run_dev.sh`, `payroll_cli.sh`, `create_simple_app.py`, `create_simple_installer.sh`) delegate to `versions/v3.1.11` so you always run the latest code while keeping older releases intact.
 - Use `./bump_version.sh vX.Y.Z` to cut a new version; it copies the active tree and repoints the root wrappers, `pytest.ini`, and `.coveragerc`.
 
-### **Core Application Files (v3.1.9):**
-- `versions/v3.1.9/src/payroll_gui.py` – GUI shell, sidebar views (Dashboard, Analytics, Insurance, Employees, Processing, Database, Settings), menus, and report orchestration
-- `versions/v3.1.9/src/process_payroll.py` – PDF extraction and payroll/insurance/receipt parsing
-- `versions/v3.1.9/src/db_storage.py` – PostgreSQL schema, migrations, imports, exports, and backup/restore
-- `versions/v3.1.9/src/create_employee_reports.py` – Excel report generation (per-employee workbook + analytical detail workbook)
-- `versions/v3.1.9/src/payroll_cli.py` – CLI entry point for headless runs and run-ledger queries
-- `versions/v3.1.9/resources/app_icon.icns` – Custom application icon
-- `versions/v3.1.9/requirements.txt` – Python dependencies for the GUI and bundler
-- `versions/v3.1.9/scripts/*.sh|py` – Launchers, development runner, bundle and installer builders
+### **Core Application Files (v3.1.11):**
+- `versions/v3.1.11/src/payroll_gui.py` – GUI shell, sidebar views (Dashboard, Analytics, Insurance, Employees, Processing, Database, Settings), menus, and report orchestration
+- `versions/v3.1.11/src/process_payroll.py` – PDF extraction and payroll/insurance/receipt parsing
+- `versions/v3.1.11/src/db_storage.py` – PostgreSQL schema, migrations, imports, exports, and backup/restore
+- `versions/v3.1.11/src/create_employee_reports.py` – Excel report generation (per-employee workbook + analytical detail workbook)
+- `versions/v3.1.11/src/payroll_cli.py` – CLI entry point for headless runs and run-ledger queries
+- `versions/v3.1.11/resources/app_icon.icns` – Custom application icon
+- `versions/v3.1.11/requirements.txt` – Python dependencies for the GUI and bundler
+- `versions/v3.1.11/scripts/*.sh|py` – Launchers, development runner, bundle and installer builders
 
 ### **Standalone Mac App:**
-- `dist/Payroll Processor.app` - Bundle generated from v3.1.9 sources
-- Universal binary (works on Intel and Apple Silicon Macs)
+- `dist/Payroll Processor.app` - Bundle generated from v3.1.11 sources
+- Current build: Apple Silicon, macOS 26+; other targets require a matching native build
 - Self-contained with all dependencies included
 - Note: `dist/` and `releases/` are gitignored and are not present in a fresh clone — run the build scripts to produce them.
 
 ### **Development Tools:**
-- `launch_gui.sh` – Wrapper that selects a Tk-capable Python, maintains a requirement-hashed runtime cache inside `versions/v3.1.9`, and launches the GUI
+- `launch_gui.sh` – Wrapper that selects a Tk-capable Python, maintains a requirement-hashed runtime cache inside `versions/v3.1.11`, and launches the GUI
 - `run_dev.sh` – Same launcher but with extra debug output and zero-friction restarts
 - `payroll_cli.sh` – Headless processing and run-ledger queries
 - `create_simple_app.py` – Simple Mac bundle builder that copies the active sources
@@ -63,10 +63,10 @@ The v3.1.3 release adds a single CLI entry point that can both run processing an
 
 ### **Tests:**
 ```bash
-versions/v3.1.9/.venv/bin/python -m pytest -q                    # 380 tests
-versions/v3.1.9/.venv/bin/python -m pytest -q --cov --cov-config=.coveragerc
+versions/v3.1.11/.venv/bin/python -m pytest -q                    # 426 unit tests; 16 optional database tests
+versions/v3.1.11/.venv/bin/python -m pytest -q --cov --cov-config=.coveragerc
 ```
-Coverage gate is 65%; the full local v3.1.9 suite passes with 86.06% coverage, including the employee workspace logic. `payroll_gui.py` is excluded from the gate; its display-independent helpers are covered by `tests/test_payroll_gui_helpers.py`.
+Coverage gate is 65%; the full local v3.1.11 suite, including database integration tests, passes with 74.53% coverage, including the employee workspace logic. `payroll_gui.py` is excluded from the gate; its display-independent helpers are covered by `tests/test_payroll_gui_helpers.py`.
 
 ## 🚀 How to Use
 
@@ -77,16 +77,16 @@ Coverage gate is 65%; the full local v3.1.9 suite passes with 86.06% coverage, i
    `releases/` is gitignored, so build it first if it is not present:
    ```bash
    ./create_simple_app.py           # builds dist/Payroll Processor.app
-   ./create_simple_installer.sh     # builds releases/v3.1.9/ artifacts
+   ./create_simple_installer.sh     # builds releases/v3.1.11/ artifacts
    ```
    Then install:
    ```bash
    # Option 1: Use the installer
-   open releases/v3.1.9/PayrollProcessor_Installer/
+   open releases/v3.1.11/PayrollProcessor_Installer/
    # Double-click "Install Payroll Processor.command"
 
    # Option 2: Mount the DMG directly
-   open releases/v3.1.9/PayrollProcessor_v3.1.9_macOS.dmg
+   open releases/v3.1.11/PayrollProcessor_v3.1.11_macOS.dmg
    # Drag app to Applications folder
    ```
 
@@ -106,17 +106,17 @@ Coverage gate is 65%; the full local v3.1.9 suite passes with 86.06% coverage, i
 ### **For Developers:**
 
 ```bash
-# Quick development testing (uses versions/v3.1.9 automatically)
+# Quick development testing (uses versions/v3.1.11 automatically)
 ./run_dev.sh
 
 # Build/refresh the macOS bundle in dist/
 ./create_simple_app.py
 
-# Generate installer artifacts in releases/v3.1.9/
+# Generate installer artifacts in releases/v3.1.11/
 ./create_simple_installer.sh
 
 # Cut a new version and repoint the root wrappers
-./bump_version.sh v3.1.9
+./bump_version.sh v3.1.11
 ```
 
 ## ✨ Key Features
@@ -165,14 +165,14 @@ Coverage gate is 65%; the full local v3.1.9 suite passes with 86.06% coverage, i
 payment processor/
 ├── versions/
 │   ├── v1.0/ … v3.1.6/    # Older code paths retained for reference
-│   └── v3.1.9/            # Active codebase (src/scripts/resources/docs/tools/tests)
+│   └── v3.1.11/            # Active codebase (src/scripts/resources/docs/tools/tests)
 ├── dist/                  # Generated “Payroll Processor.app” (gitignored)
 ├── releases/              # Distributables: ZIP/DMG/Installer (gitignored)
-├── launch_gui.sh          # Wrapper → versions/v3.1.9/scripts/launch_gui.sh
-├── run_dev.sh             # Wrapper → versions/v3.1.9/scripts/run_dev.sh
-├── payroll_cli.sh         # Wrapper → versions/v3.1.9/scripts/payroll_cli.sh
-├── create_simple_app.py   # Wrapper → versions/v3.1.9/scripts/create_simple_app.py
-├── create_simple_installer.sh  # Wrapper → versions/v3.1.9/scripts/create_simple_installer.sh
+├── launch_gui.sh          # Wrapper → versions/v3.1.11/scripts/launch_gui.sh
+├── run_dev.sh             # Wrapper → versions/v3.1.11/scripts/run_dev.sh
+├── payroll_cli.sh         # Wrapper → versions/v3.1.11/scripts/payroll_cli.sh
+├── create_simple_app.py   # Wrapper → versions/v3.1.11/scripts/create_simple_app.py
+├── create_simple_installer.sh  # Wrapper → versions/v3.1.11/scripts/create_simple_installer.sh
 └── bump_version.sh        # Cuts a new version from the active one
 ```
 

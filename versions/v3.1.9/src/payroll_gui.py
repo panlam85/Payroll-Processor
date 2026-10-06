@@ -55,6 +55,7 @@ from theme_config import get_theme_tokens
 
 import db_storage
 from app_paths import DEFAULT_REPORT_DIR
+from filter_workspace import FilterWorkspaceMixin, DOCUMENT_LABELS
 from employee_workspace import EmployeeWorkspaceMixin
 from dashboard_alerts import DashboardAlertsMixin, anomaly_alerts, jump_alert
 
@@ -290,7 +291,7 @@ class Tooltip:
             Tooltip._visible = None
 
 
-class PayrollProcessorGUI(DashboardAlertsMixin, EmployeeWorkspaceMixin):
+class PayrollProcessorGUI(FilterWorkspaceMixin, DashboardAlertsMixin, EmployeeWorkspaceMixin):
     """Main GUI application for payroll processing."""
 
     # Analytics charts, grouped by the question they answer. Each group is one
@@ -443,7 +444,7 @@ class PayrollProcessorGUI(DashboardAlertsMixin, EmployeeWorkspaceMixin):
         self.create_widgets()
         self.create_menu()
         self.root.bind_all("<Command-z>", lambda _event: self._undo_last_edit())
-        self.root.bind_all("<Command-l>", lambda _event: self._toggle_edit_lock())
+        self.root.bind_all("<Command-l>", lambda _event: self._flip_edit_lock())
         self.root.bind_all("<Command-Shift-z>", lambda _event: self._redo_last_edit())
         self.root.bind_all("<Command-f>", lambda _event: self._focus_global_search())
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -537,6 +538,8 @@ class PayrollProcessorGUI(DashboardAlertsMixin, EmployeeWorkspaceMixin):
         style.configure("SurfaceBody.TLabel", background=tokens.surface, foreground=tokens.text_secondary, font=(tokens.font_base, 12))
         style.configure("SurfaceHint.TLabel", background=tokens.surface, foreground=tokens.muted, font=(tokens.font_base, 11))
         style.configure("Eyebrow.TLabel", background=tokens.bg, foreground=tokens.accent, font=(tokens.font_mono, 10, "bold"))
+        style.configure("Sidebar.TCheckbutton", background=tokens.sidebar_bg, foreground=tokens.sidebar_text)
+        style.map("Sidebar.TCheckbutton", background=[("active", tokens.sidebar_bg)], foreground=[("active", tokens.sidebar_text)])
         style.configure("SidebarBrand.TLabel", background=tokens.sidebar_bg, foreground=tokens.sidebar_text, font=(tokens.font_display, 17, "bold"))
         style.configure("SidebarVersion.TLabel", background=tokens.sidebar_bg, foreground=tokens.sidebar_muted, font=(tokens.font_mono, 10))
         style.configure("SidebarSection.TLabel", background=tokens.sidebar_bg, foreground=tokens.sidebar_muted, font=(tokens.font_mono, 9, "bold"))
@@ -895,125 +898,18 @@ class PayrollProcessorGUI(DashboardAlertsMixin, EmployeeWorkspaceMixin):
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         main_frame.columnconfigure(0, weight=1)
-        main_frame.rowconfigure(0, weight=0)
-        main_frame.rowconfigure(1, weight=0)
-        main_frame.rowconfigure(2, weight=1)
-
-        # The filter bar drives every view, so it is grouped rather than laid
-        # out as one long row of unlabelled controls: period, document, search,
-        # then the state of the filters as removable chips underneath.
-        self.global_filter_bar = ttk.Frame(main_frame, style="App.TFrame", padding=(20, 14, 20, 8))
-        self.global_filter_bar.grid(row=0, column=0, sticky=(tk.W, tk.E))
-        # Column 2 takes the slack so the state and the reset control stay right
-        # aligned while the filter groups keep their natural width.
-        self.global_filter_bar.columnconfigure(2, weight=1)
-
-        controls = ttk.Frame(self.global_filter_bar, style="App.TFrame")
-        controls.grid(row=0, column=0, sticky=(tk.W, tk.E))
-        self.filter_controls = controls
-
-        period_group = ttk.Frame(controls, style="App.TFrame")
-        period_group.pack(side=tk.LEFT, padx=(0, 18))
-        ttk.Label(period_group, text="Period", style="Body.TLabel").pack(side=tk.LEFT, padx=(0, 8))
-        self.global_start_year_combo = ttk.Combobox(period_group, textvariable=self.global_start_year_var, state="readonly", width=7)
-        self.global_start_year_combo.pack(side=tk.LEFT, padx=(0, 4))
-        self.global_start_year_combo.bind("<<ComboboxSelected>>", self._on_global_year_change)
-        self.global_start_year_combo["values"] = ["All"]
-
-        self.global_start_month_combo = ttk.Combobox(period_group, textvariable=self.global_start_month_var, state="readonly", width=4)
-        self.global_start_month_combo.pack(side=tk.LEFT)
-        self.global_start_month_combo["values"] = [f"{month:02d}" for month in range(1, 13)]
-        self.global_start_month_combo.bind("<<ComboboxSelected>>", self._on_global_filter_change)
-
-        ttk.Label(period_group, text="→", style="Body.TLabel").pack(side=tk.LEFT, padx=6)
-
-        self.global_end_year_combo = ttk.Combobox(period_group, textvariable=self.global_end_year_var, state="readonly", width=7)
-        self.global_end_year_combo.pack(side=tk.LEFT, padx=(0, 4))
-        self.global_end_year_combo.bind("<<ComboboxSelected>>", self._on_global_filter_change)
-        self.global_end_year_combo["values"] = ["All"]
-
-        self.global_end_month_combo = ttk.Combobox(period_group, textvariable=self.global_end_month_var, state="readonly", width=4)
-        self.global_end_month_combo.pack(side=tk.LEFT)
-        self.global_end_month_combo["values"] = [f"{month:02d}" for month in range(1, 13)]
-        self.global_end_month_combo.bind("<<ComboboxSelected>>", self._on_global_filter_change)
-
-        doc_group = ttk.Frame(controls, style="App.TFrame")
-        doc_group.pack(side=tk.LEFT, padx=(0, 18))
-        ttk.Label(doc_group, text="Document", style="Body.TLabel").pack(side=tk.LEFT, padx=(0, 8))
-        self.global_doc_type_combo = ttk.Combobox(doc_group, textvariable=self.global_doc_type_var, state="readonly", width=18)
-        self.global_doc_type_combo["values"] = ["All", "salary", "bonus", "vacation_allowance", "unused_leave_compensation", "other"]
-        self.global_doc_type_combo.pack(side=tk.LEFT)
-        self.global_doc_type_combo.bind("<<ComboboxSelected>>", self._on_global_filter_change)
-
-        # Search lives directly in the bar so it can drop to its own line when
-        # the window is too narrow for one row (see _reflow_filter_bar).
-        self.filter_search_group = ttk.Frame(self.global_filter_bar, style="App.TFrame")
-        search_group = self.filter_search_group
-        ttk.Label(search_group, text="Search", style="Body.TLabel").pack(side=tk.LEFT, padx=(0, 8))
-        self.global_search_var = tk.StringVar(value="")
-        self.global_search_entry = ttk.Entry(search_group, textvariable=self.global_search_var, width=22)
-        self.global_search_entry.pack(side=tk.LEFT)
-        self.global_search_entry.bind("<KeyRelease>", self._on_global_search)
-        self.add_search_clause_btn = ttk.Button(search_group, text="+", width=2, command=self._add_search_clause)
-        self.add_search_clause_btn.pack(side=tk.LEFT, padx=(6, 0))
-        self.filter_search_wrapped = None
-
-        # Right-hand side: state and the controls that act on all of it.
-        trailing = ttk.Frame(self.global_filter_bar, style="App.TFrame")
-        trailing.grid(row=0, column=2, sticky=tk.E)
-        self.filter_trailing = trailing
-
-        self.lock_canvas = tk.Canvas(
-            trailing,
-            width=22,
-            height=22,
-            highlightthickness=0,
-            bd=0,
-            relief=tk.FLAT,
-            bg=self.theme.bg,
-        )
-        self.lock_canvas.pack(side=tk.RIGHT, padx=(10, 0))
-        self.lock_canvas.bind("<Button-1>", lambda _event: self._toggle_edit_lock())
-        self._add_tooltip(self.lock_canvas, "Toggle edit lock.")
-
-        self.reset_filters_btn = ttk.Button(trailing, text="Clear all", command=self._reset_global_filters)
-        self.reset_filters_btn.pack(side=tk.RIGHT)
-        self._add_tooltip(self.reset_filters_btn, "Clear every filter and search term.")
-
-        self.global_filter_status = tk.StringVar(value="")
-        ttk.Label(trailing, textvariable=self.global_filter_status, style="Body.TLabel").pack(side=tk.RIGHT, padx=(0, 12))
-
-        # Then the applied filters, one removable chip each.
-        self.filter_chip_frame = ttk.Frame(self.global_filter_bar, style="App.TFrame")
-        self.filter_chip_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(8, 0))
-        # The active window is shown by the period chip, so the label that used
-        # to repeat it is kept only as the chip's source of text.
-        self.global_window_label_var = tk.StringVar(value="")
-
-        self.search_clause_frame = ttk.Frame(self.global_filter_bar, style="App.TFrame")
-        self.search_clause_frame.grid(row=4, column=0, columnspan=3, sticky=tk.W, pady=(6, 0))
-        self.global_filter_bar.bind("<Configure>", self._reflow_filter_bar)
-        self._reflow_filter_bar()
-
-        self._add_tooltip(self.global_start_year_combo, "Start year for the global filter range.")
-        self._add_tooltip(self.global_start_month_combo, "Start month for the global filter range.")
-        self._add_tooltip(self.global_end_year_combo, "End year for the global filter range.")
-        self._add_tooltip(self.global_end_month_combo, "End month for the global filter range.")
-        self._add_tooltip(self.global_doc_type_combo, "Filter by document type.")
-        self._add_tooltip(self.global_search_entry, "Search across analytics and dashboard views.")
-
-        self._apply_ui_prefs()
-        self._update_lock_indicator()
-        self._render_filter_chips()
-
-        self.global_filter_separator = ttk.Separator(main_frame, orient=tk.HORIZONTAL)
-        self.global_filter_separator.grid(row=1, column=0, sticky=(tk.W, tk.E))
-
+        main_frame.rowconfigure(0, weight=1)
         content_frame = ttk.Frame(main_frame, style="App.TFrame")
-        content_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        content_frame.columnconfigure(0, weight=0)
+        content_frame.grid(row=0, column=0, sticky="nsew")
         content_frame.columnconfigure(1, weight=1)
         content_frame.rowconfigure(0, weight=1)
+        workspace = ttk.Frame(content_frame, style="App.TFrame")
+        workspace.grid(row=0, column=1, sticky="nsew")
+        workspace.columnconfigure(0, weight=1)
+        workspace.rowconfigure(1, weight=1)
+        self._create_filter_workspace(workspace)
+        self._apply_ui_prefs()
+        self._render_filter_chips()
 
         sidebar = ttk.Frame(content_frame, style="Sidebar.TFrame", padding=(16, 22))
         sidebar.grid(row=0, column=0, sticky=(tk.N, tk.S, tk.W))
@@ -1056,8 +952,16 @@ class PayrollProcessorGUI(DashboardAlertsMixin, EmployeeWorkspaceMixin):
                 )
                 self._add_tooltip(btn, f"{label}  (⌘{shortcut})")
 
-        self.notebook = ttk.Notebook(content_frame, style="Hidden.TNotebook")
-        self.notebook.grid(row=0, column=1, sticky=(tk.W, tk.E, tk.N, tk.S))
+        sidebar.rowconfigure(row, weight=1)
+        self.sidebar_edit_lock = ttk.Checkbutton(
+            sidebar, text="Lock table editing", variable=self.edit_lock_var,
+            command=self._toggle_edit_lock, style="Sidebar.TCheckbutton",
+        )
+        self.sidebar_edit_lock.grid(row=row + 1, column=0, sticky="w", pady=(20, 0))
+        self._add_tooltip(self.sidebar_edit_lock, "Prevent changes to payroll tables (⌘L).")
+
+        self.notebook = ttk.Notebook(workspace, style="Hidden.TNotebook")
+        self.notebook.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
 
         self.processing_tab = ttk.Frame(self.notebook, padding="28", style="App.TFrame")
         self.db_tab = ttk.Frame(self.notebook, padding="24", style="App.TFrame")
@@ -3900,7 +3804,9 @@ class PayrollProcessorGUI(DashboardAlertsMixin, EmployeeWorkspaceMixin):
         tab = tab_map.get(view_name)
         if tab is not None and str(tab) in self.notebook.tabs():
             self.notebook.select(tab)
-        filters_visible = view_name not in {"Processing", "Settings"}
+        if getattr(self, "filters_expanded", False):
+            self._set_filter_panel_open(False, animate=False, restore_focus=False)
+        filters_visible = view_name not in {"Processing", "Settings", "Database"}
         filter_bar = getattr(self, "global_filter_bar", None)
         separator = getattr(self, "global_filter_separator", None)
         if filter_bar is not None:
@@ -5447,7 +5353,12 @@ class PayrollProcessorGUI(DashboardAlertsMixin, EmployeeWorkspaceMixin):
         def _apply(years):
             self._global_years_loading = False
             self._global_years_cached_at = time.monotonic()
-            year_values = ["All"] + [str(year) for year in years]
+            # Keep explicit selections, including periods with no imported data.
+            selected = {self.global_start_year_var.get(), self.global_end_year_var.get()}
+            year_values = ["All"] + sorted(
+                {str(year) for year in years} | (selected - {"All", ""})
+                | {str(datetime.date.today().year)}, reverse=True,
+            )
             self.global_start_year_combo["values"] = year_values
             self.global_end_year_combo["values"] = year_values
             if self.global_start_year_var.get() not in year_values:
@@ -5469,8 +5380,6 @@ class PayrollProcessorGUI(DashboardAlertsMixin, EmployeeWorkspaceMixin):
 
     def _refresh_global_months(self):
         month_values = [f"{month:02d}" for month in range(1, 13)]
-        self.global_start_month_combo["values"] = month_values
-        self.global_end_month_combo["values"] = month_values
         if self.global_start_month_var.get() not in month_values:
             self.global_start_month_var.set(month_values[0])
         if self.global_end_month_var.get() not in month_values:
@@ -5536,44 +5445,14 @@ class PayrollProcessorGUI(DashboardAlertsMixin, EmployeeWorkspaceMixin):
             op_combo.grid(row=idx, column=0, padx=(0, 6), sticky=tk.W)
             op_combo.bind("<<ComboboxSelected>>", self._on_global_search)
 
-            term_entry = ttk.Entry(self.search_clause_frame, textvariable=clause["term_var"], width=20)
+            term_entry = ttk.Entry(self.search_clause_frame, textvariable=clause["term_var"], width=16)
             term_entry.grid(row=idx, column=1, padx=(0, 6), sticky=tk.W)
             term_entry.bind("<KeyRelease>", self._on_global_search)
 
-            remove_btn = ttk.Button(self.search_clause_frame, text="-", width=2, command=lambda i=idx: self._remove_search_clause(i))
+            remove_btn = ttk.Button(self.search_clause_frame, text="Remove", width=7, command=lambda i=idx: self._remove_search_clause(i))
             remove_btn.grid(row=idx, column=2, padx=(0, 4), sticky=tk.W)
 
-            if idx == len(self.search_clauses) - 1 and len(self.search_clauses) < 2:
-                add_btn = ttk.Button(self.search_clause_frame, text="+", width=2, command=self._add_search_clause)
-                add_btn.grid(row=idx, column=3, sticky=tk.W)
         self._render_filter_chips()
-
-    def _reflow_filter_bar(self, _event=None):
-        """Keep the filter controls on one line, wrapping search when narrow.
-
-        At the 900px minimum window width all four groups do not fit, so the
-        search group drops to its own line instead of being clipped.
-        """
-        controls = getattr(self, "filter_controls", None)
-        search = getattr(self, "filter_search_group", None)
-        if controls is None or search is None:
-            return
-        available = self.global_filter_bar.winfo_width()
-        if available <= 1:
-            available = self.root.winfo_width() - 32
-        trailing = getattr(self, "filter_trailing", None)
-        needed = controls.winfo_reqwidth() + search.winfo_reqwidth() + 24
-        if trailing is not None:
-            needed += trailing.winfo_reqwidth()
-        wrapped = needed > available
-        if wrapped == self.filter_search_wrapped:
-            return
-        self.filter_search_wrapped = wrapped
-        search.grid_forget()
-        if wrapped:
-            search.grid(row=1, column=0, columnspan=3, sticky=tk.W, pady=(8, 0))
-        else:
-            search.grid(row=0, column=1, sticky=tk.W, padx=(18, 0))
 
     def _reset_global_filters(self):
         """Clear every filter and search term, then reload the views."""
@@ -5611,7 +5490,7 @@ class PayrollProcessorGUI(DashboardAlertsMixin, EmployeeWorkspaceMixin):
                 self.global_doc_type_var.set("All")
                 self._on_global_filter_change()
 
-            chips.append((f"Document: {doc_type}", clear_doc))
+            chips.append((f"Document: {DOCUMENT_LABELS.get(doc_type, doc_type)}", clear_doc))
 
         term = self.global_search_var.get().strip()
         if term:
@@ -5632,30 +5511,6 @@ class PayrollProcessorGUI(DashboardAlertsMixin, EmployeeWorkspaceMixin):
             ))
         return chips
 
-    def _render_filter_chips(self):
-        """Redraw the applied-filter chips under the filter controls."""
-        if not hasattr(self, "filter_chip_frame"):
-            return
-        for child in self.filter_chip_frame.winfo_children():
-            child.destroy()
-        chips = self._active_filter_chips()
-        if not chips:
-            ttk.Label(
-                self.filter_chip_frame,
-                text="No filters applied — showing everything.",
-                style="Hint.TLabel",
-            ).pack(side=tk.LEFT)
-            self.reset_filters_btn.state(["disabled"])
-            return
-        self.reset_filters_btn.state(["!disabled"])
-        for label, clear in chips:
-            chip = ttk.Frame(self.filter_chip_frame, style="Chip.TFrame", padding=(8, 3))
-            chip.pack(side=tk.LEFT, padx=(0, 6))
-            ttk.Label(chip, text=label, style="Chip.TLabel").pack(side=tk.LEFT)
-            close = ttk.Label(chip, text="✕", style="Chip.TLabel", cursor="hand2")
-            close.pack(side=tk.LEFT, padx=(6, 0))
-            close.bind("<Button-1>", lambda _event, fn=clear: fn())
-
     def _refresh_all_views(self):
         """Refresh the screen the operator can see.
 
@@ -5675,6 +5530,15 @@ class PayrollProcessorGUI(DashboardAlertsMixin, EmployeeWorkspaceMixin):
     def _update_window_label(self):
         start_year_val = self.global_start_year_var.get()
         end_year_val = self.global_end_year_var.get()
+        # Repair old saved half-ranges so the visible selection is applied.
+        if start_year_val != "All" and end_year_val == "All":
+            self.global_end_year_var.set(start_year_val)
+            self.global_end_month_var.set(self.global_start_month_var.get())
+            end_year_val = start_year_val
+        elif end_year_val != "All" and start_year_val == "All":
+            self.global_start_year_var.set(end_year_val)
+            self.global_start_month_var.set(self.global_end_month_var.get())
+            start_year_val = end_year_val
         start_month_val = self.global_start_month_var.get()
         end_month_val = self.global_end_month_var.get()
         if (
@@ -5706,7 +5570,7 @@ class PayrollProcessorGUI(DashboardAlertsMixin, EmployeeWorkspaceMixin):
         self.global_range_end_month = end_month
         start_label = f"{calendar.month_name[start_month][:3]} {start_year}"
         end_label = f"{calendar.month_name[end_month][:3]} {end_year}"
-        self.global_window_label_var.set(f"{start_label} → {end_label}")
+        self.global_window_label_var.set(start_label if start_label == end_label else f"{start_label} – {end_label}")
         self._render_filter_chips()
 
     def _get_global_filters(self):
@@ -6434,6 +6298,9 @@ class PayrollProcessorGUI(DashboardAlertsMixin, EmployeeWorkspaceMixin):
         if getattr(self, "lock_canvas", None) is not None:
             self.lock_canvas.configure(bg=tokens.bg)
             self._update_lock_indicator()
+
+        if getattr(self, "filter_canvas", None) is not None:
+            self.filter_canvas.configure(bg=tokens.surface)
 
         if getattr(self, "settings_canvas", None) is not None:
             self.settings_canvas.configure(bg=tokens.bg)
@@ -7234,6 +7101,10 @@ class PayrollProcessorGUI(DashboardAlertsMixin, EmployeeWorkspaceMixin):
             str(self.db_config.get("role", "editor")).lower() == "editor"
             and not bool(self.edit_lock_var.get())
         )
+
+    def _flip_edit_lock(self):
+        self.edit_lock_var.set(not self.edit_lock_var.get())
+        self._toggle_edit_lock()
 
     def _toggle_edit_lock(self):
         locked = bool(self.edit_lock_var.get())
