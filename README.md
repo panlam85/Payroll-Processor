@@ -55,7 +55,7 @@ Double-click an alert to open its payroll details.
 
 ## Requirements
 
-For the packaged **v3.1.11 app**, PostgreSQL, Python and PDF tools are included.
+For the packaged **v3.1.12 app**, PostgreSQL, Python and PDF tools are included.
 On a new installation, open the app and it prepares its local database automatically.
 No separate database or Homebrew installation is required. The current local build
 targets **Apple Silicon and macOS 26+**; other targets require a matching native build.
@@ -148,7 +148,7 @@ version.
 PayrollProcessor/
 ├── versions/
 │   ├── v1.0/ … v3.1.6/     # frozen historical releases
-│   └── v3.1.11/             # active codebase
+│   └── v3.1.12/             # active codebase
 ├── launch_gui.sh           # → versions/<active>/scripts/launch_gui.sh
 ├── run_dev.sh              # → versions/<active>/scripts/run_dev.sh
 ├── payroll_cli.sh          # → versions/<active>/scripts/payroll_cli.sh
@@ -180,11 +180,11 @@ directory; older versions are history and should not be edited.
 ### Tests
 
 ```bash
-versions/v3.1.11/.venv/bin/python -m pytest -q                                    # 426 unit tests; 16 optional database tests
-versions/v3.1.11/.venv/bin/python -m pytest -q --cov --cov-config=.coveragerc     # with the gate
+versions/v3.1.12/.venv/bin/python -m pytest -q                                    # 430 unit tests; 17 optional database tests
+versions/v3.1.12/.venv/bin/python -m pytest -q --cov --cov-config=.coveragerc     # with the gate
 ```
 
-The coverage gate is 65%. The full local v3.1.11 suite, including database integration tests, passes with **74.53%**
+The coverage gate is 65%. The full local v3.1.12 suite, including database integration tests, passes with **74.92%**
 coverage, including the employee workspace logic:
 
 | Module | Coverage |
@@ -216,6 +216,14 @@ uninitialized instance and needs no window server.
 
 Released under the [MIT License](LICENSE). Copyright © 2026 PanLam.
 
+
+### Filing payslips (v3.1.12)
+
+After a payment is marked paid, choose **Yes** to file its PDF payslip, or
+**No** to skip it. Find it again under **Employees → Payment history → Paid**.
+Select the payment and choose **Add or show payslip…** to file a PDF later
+or reveal the existing one in Finder. PDFs are stored in the employee’s
+**Payslips** subfolder in the configured year/month PDF archive.
 
 ### Employee management (v3.1.11)
 
@@ -264,7 +272,7 @@ Optional database regression tests use a separate disposable local database:
 
 ```bash
 createdb payroll_employee_qa_3110
-PAYROLL_EMPLOYEE_QA=1 PAYROLL_BUNDLED_PG_QA="/absolute/path/to/bundled/postgres" PYTHONPATH=versions/v3.1.11/src versions/v3.1.11/.venv/bin/python -m pytest -q --cov --cov-config=.coveragerc
+PAYROLL_EMPLOYEE_QA=1 PAYROLL_BUNDLED_PG_QA="/absolute/path/to/bundled/postgres" PYTHONPATH=versions/v3.1.12/src versions/v3.1.12/.venv/bin/python -m pytest -q --cov --cov-config=.coveragerc
 ```
 
 This exercises 442 tests, including real transactions, rollback, alias reimports,

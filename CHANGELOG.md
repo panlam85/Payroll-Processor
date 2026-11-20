@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here. Newer entries go to the top.
 
+## v3.1.12 — 2026-11-20
+
+- Offer to file a PDF payslip when a payroll payment is marked paid from the
+  grid, entry editor, monthly summary or receipt import. Dismissing the prompt
+  leaves the payment paid.
+- Save each payslip under the employee’s monthly PDF archive and link it to
+  the specific payment. Use **Employees → Payment history → Paid → Add or
+  show payslip** to attach it later or reveal the saved file in Finder.
+
 ## v3.1.11 — 2026-10-06
 
 - Bundle PostgreSQL 18, its libraries, schema and backup/restore tools in the Mac app.
