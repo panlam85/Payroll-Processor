@@ -61,6 +61,8 @@ CREATE TABLE IF NOT EXISTS payroll_entries (
     created_at     TIMESTAMP NOT NULL DEFAULT now()
 );
 
+ALTER TABLE payroll_entries ADD COLUMN IF NOT EXISTS payslip_archive_path TEXT;
+
 CREATE TABLE IF NOT EXISTS insurance_contributions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     payroll_entry_id UUID NOT NULL REFERENCES payroll_entries(id) ON DELETE CASCADE,
